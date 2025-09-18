@@ -257,8 +257,31 @@ async function getEmployeeCount(browser, baseUrl) {
 
 async function maybeStorageState() {
   const storageStatePath = path.resolve(__dirname, '..', 'storageState.json');
+  // Prefer saved storage state file if present
   if (fs.existsSync(storageStatePath)) {
     return { storageState: storageStatePath };
+  }
+  // Fallback: build storage state from LI_AT cookie if provided via env
+  const liAt = process.env.LI_AT || process.env.LINKEDIN_LI_AT;
+  if (liAt) {
+    const thirtyDaysFromNowSeconds = Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 30;
+    return {
+      storageState: {
+        cookies: [
+          {
+            name: 'li_at',
+            value: liAt,
+            domain: '.linkedin.com',
+            path: '/',
+            expires: thirtyDaysFromNowSeconds,
+            httpOnly: true,
+            secure: true,
+            sameSite: 'Lax'
+          }
+        ],
+        origins: []
+      }
+    };
   }
   return {};
 }

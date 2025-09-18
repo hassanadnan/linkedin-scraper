@@ -55,6 +55,10 @@ Endpoints:
 - `GET /health`
 - `GET /scrape?url=<linkedin-company-url>`
 
+Auth options:
+- Set `LINKEDIN_EMAIL` and `LINKEDIN_PASSWORD` (server attempts auto-login on boot and saves `storageState.json`).
+- Or set `LI_AT` (or `LINKEDIN_LI_AT`) with your LinkedIn session cookie value to avoid 2FA flows.
+
 ### Deploy to Railway (Docker)
 1. Ensure you are authenticated locally and want to ship cookies (optional). You can also log in on the server by running the `/login` script once.
 2. This repo includes a Dockerfile based on the Playwright image.
