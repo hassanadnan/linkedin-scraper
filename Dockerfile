@@ -9,7 +9,6 @@ RUN npm ci --omit=dev
 
 # Copy source code
 COPY src ./src
-COPY .env.example ./.env.example
 
 # Playwright browsers already bundled in this image
 # Expose the port (Railway sets PORT env automatically)
