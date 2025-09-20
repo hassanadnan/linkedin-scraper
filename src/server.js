@@ -35,13 +35,20 @@ app.get('/scrape', async (req, res) => {
 const port = Number(process.env.PORT || 3000);
 
 async function boot() {
-  // If credentials exist, attempt one-time login to create storageState
-  if (process.env.LINKEDIN_EMAIL && process.env.LINKEDIN_PASSWORD) {
+  const hasLiAt = !!(process.env.LI_AT || process.env.LINKEDIN_LI_AT);
+  const hasCreds = !!(process.env.LINKEDIN_EMAIL && process.env.LINKEDIN_PASSWORD);
+  const autoLoginFlag = String(process.env.AUTO_LOGIN || '').toLowerCase() === 'true';
+  const shouldAutoLogin = autoLoginFlag && hasCreds && !hasLiAt;
+
+  if (shouldAutoLogin) {
     try {
+      console.log('Attempting auto-login with credentials...');
       await loginAndSaveStorage();
     } catch (e) {
       console.warn('Auto-login failed:', e?.message || e);
     }
+  } else {
+    console.log('Skipping auto-login. hasLiAt=%s hasCreds=%s AUTO_LOGIN=%s', hasLiAt, hasCreds, autoLoginFlag);
   }
   app.listen(port, () => {
     console.log(`LinkedIn scraper API listening on http://localhost:${port}`);
