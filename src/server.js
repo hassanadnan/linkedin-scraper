@@ -4,6 +4,8 @@ const morgan = require('morgan');
 require('dotenv').config();
 
 const { scrapeCompany } = require('./scrape');
+const { loginAndSaveStorage } = require('./login');
+const { voyagerScrape } = require('./voyager');
 
 const app = express();
 app.use(cors());
@@ -18,6 +20,11 @@ app.get('/scrape', async (req, res) => {
   const url = req.query.url || req.query.u;
   if (!url) return res.status(400).json({ error: 'Missing url parameter' });
   try {
+    // voyager=true to use LinkedIn JSON APIs (faster, requires LI_AT)
+    if (String(req.query.voyager || '').toLowerCase() === 'true') {
+      const v = await voyagerScrape(url);
+      return res.json({ companyUrl: url, ...v, fetchedAt: new Date().toISOString() });
+    }
     const data = await scrapeCompany(url, { headless: true });
     res.json(data);
   } catch (err) {
@@ -26,8 +33,21 @@ app.get('/scrape', async (req, res) => {
 });
 
 const port = Number(process.env.PORT || 3000);
-app.listen(port, () => {
-  console.log(`LinkedIn scraper API listening on http://localhost:${port}`);
-});
+
+async function boot() {
+  // If credentials exist, attempt one-time login to create storageState
+  if (process.env.LINKEDIN_EMAIL && process.env.LINKEDIN_PASSWORD) {
+    try {
+      await loginAndSaveStorage();
+    } catch (e) {
+      console.warn('Auto-login failed:', e?.message || e);
+    }
+  }
+  app.listen(port, () => {
+    console.log(`LinkedIn scraper API listening on http://localhost:${port}`);
+  });
+}
+
+boot();
 
 
