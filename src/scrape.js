@@ -740,13 +740,31 @@ async function scrapeCompany(urlOrSlug, options = {}) {
     context = await getPersistentContext(headless);
   }
 
-  const [jobsPostedCount, employee] = await Promise.all([
-    getJobsCount(context, companyUrl),
-    getEmployeeCount(context, companyUrl)
-  ]);
+  let jobsPostedCount = null;
+  let employee = null;
+  
+  try {
+    [jobsPostedCount, employee] = await Promise.all([
+      getJobsCount(context, companyUrl),
+      getEmployeeCount(context, companyUrl)
+    ]);
+  } catch (err) {
+    logDebug('Error during data extraction:', err.message);
+    // Try sequential extraction as fallback
+    try {
+      jobsPostedCount = await getJobsCount(context, companyUrl);
+    } catch (_) {}
+    try {
+      employee = await getEmployeeCount(context, companyUrl);
+    } catch (_) {}
+  }
 
   // Save latest state after scrape
-  try { await persistStorageState(context); } catch (_) { }
+  try { 
+    if (!incognito) {
+      await persistStorageState(context); 
+    }
+  } catch (_) { }
 
   return {
     companyUrl,
