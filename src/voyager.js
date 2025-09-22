@@ -173,20 +173,44 @@ async function voyagerEmployeesTotal(orgId, liAt) {
   const headers = buildHeaders(liAt);
   const timeout = Number(process.env.VOYAGER_TIMEOUT_MS || 12000);
 
-  // 1) People-only blended search
+  // 1) Try company-specific people API (most accurate)
+  try {
+    const companyPeopleUrl = `https://www.linkedin.com/voyager/api/organization/companies/${encodeURIComponent(orgId)}/people?count=0`;
+    const companyPeopleJson = await fetchJson(companyPeopleUrl, headers, timeout);
+    if (companyPeopleJson) {
+      const totals = deepFindTotals(companyPeopleJson);
+      if (totals.length) {
+        const maxTotal = Math.max(...totals);
+        console.log(`Found employee count via company people API: ${maxTotal}`);
+        return maxTotal;
+      }
+    }
+  } catch (err) {
+    console.log('Company people API failed:', err.message);
+  }
+
+  // 2) People-only blended search
   const blendedPeople = `https://www.linkedin.com/voyager/api/search/blended?count=1&filters=List(resultType-%3EPEOPLE,currentCompany-%3E${encodeURIComponent(orgId)})&origin=COMPANY_PAGE_CANNED_SEARCH&q=all`;
   const j1 = await fetchJson(blendedPeople, headers, timeout).catch(() => null);
   if (j1) {
     const t = deepFindTotals(j1);
-    if (t.length) return Math.max(...t);
+    if (t.length) {
+      const maxTotal = Math.max(...t);
+      console.log(`Found employee count via blended search: ${maxTotal}`);
+      return maxTotal;
+    }
   }
 
-  // 2) Guided people cluster (often returns exact totals)
+  // 3) Guided people cluster (often returns exact totals)
   const guided = `https://www.linkedin.com/voyager/api/search/cluster?count=0&guides=List(currentCompany-%3E${encodeURIComponent(orgId)})&origin=COMPANY_PAGE_CANNED_SEARCH&q=guided`;
   const j2 = await fetchJson(guided, headers, timeout).catch(() => null);
   if (j2) {
     const t = deepFindTotals(j2);
-    if (t.length) return Math.max(...t);
+    if (t.length) {
+      const maxTotal = Math.max(...t);
+      console.log(`Found employee count via guided search: ${maxTotal}`);
+      return maxTotal;
+    }
   }
 
   // 3) Organization company record may include staff ranges
@@ -239,19 +263,92 @@ async function voyagerJobsTotal(orgId, liAt) {
   return null;
 }
 
-async function voyagerAssociatedMembers(companyUrl, liAt) {
+async function voyagerAssociatedMembers(companyUrl, liAt, orgId) {
   const headers = buildHeaders(liAt);
   const timeout = Number(process.env.VOYAGER_TIMEOUT_MS || 12000);
   const vanity = extractVanity(companyUrl);
   if (!vanity) return null;
+
+  // Strategy 1: Try Voyager API for company people data (most precise)
+  if (orgId) {
+    try {
+      const apiUrl = `https://www.linkedin.com/voyager/api/organization/companies/${encodeURIComponent(orgId)}/people`;
+      const json = await fetchJson(apiUrl, headers, timeout);
+      if (json) {
+        const jsonStr = JSON.stringify(json);
+        // Look for total count in API response
+        const patterns = [
+          /"total":\s*(\d+)/i,
+          /"totalResults":\s*(\d+)/i,
+          /"count":\s*(\d+)/i,
+          /"numResults":\s*(\d+)/i,
+          /"associatedMemberCount":\s*(\d+)/i
+        ];
+        
+        for (const pattern of patterns) {
+          const match = jsonStr.match(pattern);
+          if (match && match[1]) {
+            const count = Number(match[1]);
+            if (Number.isFinite(count) && count > 0) {
+              console.log(`Found associated members via API: ${count}`);
+              return count;
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.log('Voyager API people endpoint failed:', err.message);
+    }
+  }
+
+  // Strategy 2: Enhanced HTML parsing with multiple patterns
   const peopleUrl = `https://www.linkedin.com/company/${encodeURIComponent(vanity)}/people/`;
   const html = await fetchText(peopleUrl, headers, timeout).catch(() => null);
   if (!html) return null;
-  const m = html.match(/([\d,.]+)\s+associated\s+members/i);
-  if (m && m[1]) {
-    const num = Number(m[1].replace(/[,]/g, ''));
-    if (Number.isFinite(num)) return num;
+
+  // Multiple regex patterns for associated members
+  const patterns = [
+    /([\d,.]+)\s+associated\s+members/i,
+    /([\d,.]+)\s+members?\s+on\s+linkedin/i,
+    /([\d,.]+)\s+people\s+work\s+here/i,
+    /([\d,.]+)\s+employees?\s+on\s+linkedin/i,
+    /see\s+all\s+([\d,.]+)\s+employees/i,
+    /view\s+all\s+([\d,.]+)\s+employees/i,
+    /"associatedMemberCount":\s*([\d,.]+)/i,
+    /"totalCount":\s*([\d,.]+)/i
+  ];
+
+  for (const pattern of patterns) {
+    const match = html.match(pattern);
+    if (match && match[1]) {
+      const cleanNumber = match[1].replace(/[,]/g, '');
+      const num = Number(cleanNumber);
+      if (Number.isFinite(num) && num > 0) {
+        console.log(`Found associated members via HTML pattern: ${num}`);
+        return num;
+      }
+    }
   }
+
+  // Strategy 3: Look for JSON data embedded in HTML
+  try {
+    const jsonMatches = html.match(/<script[^>]*>.*?"associatedMemberCount":\s*(\d+).*?<\/script>/gi);
+    if (jsonMatches) {
+      for (const jsonMatch of jsonMatches) {
+        const countMatch = jsonMatch.match(/"associatedMemberCount":\s*(\d+)/i);
+        if (countMatch && countMatch[1]) {
+          const count = Number(countMatch[1]);
+          if (Number.isFinite(count) && count > 0) {
+            console.log(`Found associated members via embedded JSON: ${count}`);
+            return count;
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.log('JSON extraction failed:', err.message);
+  }
+
   return null;
 }
 
@@ -259,13 +356,25 @@ async function voyagerScrape(companyUrl) {
   const liAt = process.env.LI_AT || process.env.LINKEDIN_LI_AT;
   if (!liAt) throw new Error('LI_AT cookie required for Voyager mode');
   const orgId = await resolveOrgId(companyUrl, liAt);
+  
+  // Try associated members first (most precise), then fallback methods
   const [associatedMembers, employeeCountFallback, jobsPostedCount] = await Promise.all([
-    voyagerAssociatedMembers(companyUrl, liAt),
+    voyagerAssociatedMembers(companyUrl, liAt, orgId),
     voyagerEmployeesTotal(orgId, liAt),
     voyagerJobsTotal(orgId, liAt)
   ]);
+  
+  // Prioritize associated members count, but provide both for comparison
   const employeeCount = associatedMembers ?? employeeCountFallback ?? null;
-  return { orgId, employeeCount, jobsPostedCount };
+  
+  return { 
+    orgId, 
+    employeeCount, 
+    associatedMembers, // Exact count from people tab
+    employeeCountRange: associatedMembers ? null : (employeeCountFallback ? `${employeeCountFallback}+` : null),
+    jobsPostedCount,
+    dataSource: associatedMembers ? 'associated_members' : (employeeCountFallback ? 'employee_search' : 'none')
+  };
 }
 
 module.exports = { voyagerScrape };

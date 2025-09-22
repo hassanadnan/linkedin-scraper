@@ -162,6 +162,31 @@ app.get('/session-export-guide', (req, res) => {
   });
 });
 
+// Debug endpoint for employee count extraction
+app.get('/debug-employee-count', async (req, res) => {
+  const url = req.query.url || req.query.u;
+  if (!url) return res.status(400).json({ error: 'Missing url parameter' });
+  
+  try {
+    const { voyagerScrape } = require('./voyager');
+    const result = await voyagerScrape(url);
+    
+    res.json({
+      url,
+      debug: true,
+      ...result,
+      explanation: {
+        associatedMembers: 'Exact count from company people page',
+        employeeCount: 'Final count used (prioritizes associated members)',
+        dataSource: 'Which method provided the employee count',
+        employeeCountRange: 'Range if exact count not available'
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message, debug: true });
+  }
+});
+
 // Cookie health monitoring with multi-cookie support
 app.get('/cookie-health', async (req, res) => {
   const cookieManager = require('./cookieManager');
