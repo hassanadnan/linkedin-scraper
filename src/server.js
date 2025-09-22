@@ -20,15 +20,20 @@ app.get('/scrape', async (req, res) => {
   const url = req.query.url || req.query.u;
   if (!url) return res.status(400).json({ error: 'Missing url parameter' });
   try {
-    // voyager=true to use LinkedIn JSON APIs (faster, requires LI_AT)
-    if (String(req.query.voyager || '').toLowerCase() === 'true') {
+    // Default to Voyager if LI_AT present (fast), unless ?voyager=false
+    const liAtPresent = !!(process.env.LI_AT || process.env.LINKEDIN_LI_AT);
+    const q = String(req.query.voyager || '').toLowerCase();
+    const wantVoyager = (q === 'true') || (q === '' && liAtPresent);
+
+    if (wantVoyager) {
       const v = await voyagerScrape(url);
       return res.json({ companyUrl: url, ...v, fetchedAt: new Date().toISOString() });
     }
     const data = await scrapeCompany(url, { headless: true });
     res.json(data);
   } catch (err) {
-    res.status(500).json({ error: err?.message || String(err) });
+    const msg = err?.message || String(err);
+    res.status(500).json({ error: msg });
   }
 });
 

@@ -13,14 +13,27 @@ function buildHeaders(liAt) {
   };
 }
 
-async function fetchText(url, headers) {
-  const res = await fetch(url, { headers });
+function withTimeout(signal, ms) {
+  const ctrl = new AbortController();
+  const id = setTimeout(() => ctrl.abort(new Error(`Timeout ${ms}ms`)), ms);
+  const composite = new AbortController();
+  signal?.addEventListener('abort', () => composite.abort(signal.reason));
+  ctrl.signal.addEventListener('abort', () => composite.abort(ctrl.signal.reason));
+  return { signal: composite.signal, cancel: () => clearTimeout(id) };
+}
+
+async function fetchText(url, headers, timeoutMs) {
+  const base = new AbortController();
+  const { signal, cancel } = withTimeout(base.signal, timeoutMs);
+  const res = await fetch(url, { headers, signal }).finally(cancel);
   if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
   return res.text();
 }
 
-async function fetchJson(url, headers) {
-  const res = await fetch(url, { headers });
+async function fetchJson(url, headers, timeoutMs) {
+  const base = new AbortController();
+  const { signal, cancel } = withTimeout(base.signal, timeoutMs);
+  const res = await fetch(url, { headers, signal }).finally(cancel);
   if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
   return res.json();
 }
@@ -50,7 +63,7 @@ function deepFindTotals(obj, out = []) {
 async function resolveOrgId(companyUrl, liAt) {
   const headers = buildHeaders(liAt);
   // Fetch the public HTML to extract orgId reliably
-  const html = await fetchText(companyUrl, headers);
+  const html = await fetchText(companyUrl, headers, Number(process.env.VOYAGER_TIMEOUT_MS || 12000));
   const orgId = findFirstOrgIdInHtml(html);
   if (!orgId) throw new Error('Could not resolve organization ID from company page');
   return orgId;
@@ -59,7 +72,7 @@ async function resolveOrgId(companyUrl, liAt) {
 async function voyagerEmployeesTotal(orgId, liAt) {
   const headers = buildHeaders(liAt);
   const url = `https://www.linkedin.com/voyager/api/search/blended?count=1&filters=List(currentCompany-%3E${encodeURIComponent(orgId)})&origin=COMPANY_PAGE_CANNED_SEARCH&q=all`;
-  const json = await fetchJson(url, headers).catch(() => null);
+  const json = await fetchJson(url, headers, Number(process.env.VOYAGER_TIMEOUT_MS || 12000)).catch(() => null);
   if (!json) return null;
   const totals = deepFindTotals(json);
   return totals.length ? Math.max(...totals) : null;
@@ -73,14 +86,14 @@ async function voyagerJobsTotal(orgId, liAt) {
     `https://www.linkedin.com/voyager/api/jobs/search?count=1&companyIds=List(${encodeURIComponent(orgId)})&q=jobSearch`,
   ];
   for (const url of candidates) {
-    const json = await fetchJson(url, headers).catch(() => null);
+    const json = await fetchJson(url, headers, Number(process.env.VOYAGER_TIMEOUT_MS || 12000)).catch(() => null);
     if (!json) continue;
     const totals = deepFindTotals(json);
     if (totals.length) return Math.max(...totals);
   }
   // Fallback: use the public jobs page and scan text quickly
   const jobsHtmlUrl = `https://www.linkedin.com/company/${orgId}/jobs/`;
-  const html = await fetchText(jobsHtmlUrl, headers).catch(() => null);
+  const html = await fetchText(jobsHtmlUrl, headers, Number(process.env.VOYAGER_TIMEOUT_MS || 12000)).catch(() => null);
   if (html) {
     const m = html.match(/(\d[\d,.]*[km]?\+?)\s+results/i) || html.match(/has\s+(\d[\d,.]*[km]?\+?)\s+(?:job\s+openings?|posted\s+jobs?)/i);
     if (m && m[1]) {
