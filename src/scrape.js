@@ -15,9 +15,13 @@ function parseBoolean(value, defaultValue = true) {
 }
 
 function ensureCompanyUrl(rawUrl) {
-  if (!/^https?:\/\//i.test(rawUrl)) {
+  // Handle simple company slugs (e.g., "microsoft" -> "https://www.linkedin.com/company/microsoft/")
+  if (!/^https?:\/\//i.test(rawUrl) && !rawUrl.includes('.')) {
+    rawUrl = `https://www.linkedin.com/company/${rawUrl}/`;
+  } else if (!/^https?:\/\//i.test(rawUrl)) {
     rawUrl = `https://${rawUrl}`;
   }
+
   let url = new URL(rawUrl);
   if (!/linkedin\.com$/i.test(url.hostname) && !/linkedin\.com$/i.test(url.hostname.replace(/^www\./, ''))) {
     throw new Error('URL must be a LinkedIn URL');
@@ -85,11 +89,11 @@ async function safeGoto(page, url) {
   }
   try {
     await page.waitForLoadState('domcontentloaded', { timeout: 15000 });
-  } catch (_) {}
+  } catch (_) { }
   // Best-effort network idle wait without failing
   try {
     await page.waitForLoadState('networkidle', { timeout: 10000 });
-  } catch (_) {}
+  } catch (_) { }
   await dismissBanners(page);
   logDebug('navigated', url);
 }
@@ -108,23 +112,22 @@ async function dismissBanners(page) {
     try {
       const el = await page.$(sel);
       if (el) {
-        await el.click({ timeout: 1000 }).catch(() => {});
-        await page.waitForTimeout(200).catch(() => {});
+        await el.click({ timeout: 1000 }).catch(() => { });
+        await page.waitForTimeout(200).catch(() => { });
       }
-    } catch (_) {}
+    } catch (_) { }
   }
 }
 
-async function getJobsCount(browser, baseUrl) {
+async function getJobsCount(context, baseUrl) {
   // 1) Jobs page: target the banner phrase "has X job openings/posted jobs"
   const jobsUrl = new URL('jobs/', baseUrl).toString();
-  let context = await browser.newContext(await maybeStorageState());
   let page = await context.newPage();
   try {
     await safeGoto(page, jobsUrl);
-    try { await page.waitForSelector('text=/job openings/i', { timeout: 12000 }); } catch(_) {}
-    try { await page.waitForSelector('text=/posted jobs/i', { timeout: 12000 }); } catch(_) {}
-    try { await page.waitForTimeout(1000); } catch(_) {}
+    try { await page.waitForSelector('text=/job openings/i', { timeout: 12000 }); } catch (_) { }
+    try { await page.waitForSelector('text=/posted jobs/i', { timeout: 12000 }); } catch (_) { }
+    try { await page.waitForTimeout(1000); } catch (_) { }
 
     const phraseCount = await extractCountByPatterns(page, [
       /has\s+(\d[\d,.]*[km]?\+?)\s+(?:job\s+openings?|posted\s+jobs?)/i,
@@ -144,11 +147,10 @@ async function getJobsCount(browser, baseUrl) {
     const fromProminentParsed = parseHumanNumber(fromProminent);
     if (fromProminentParsed) return fromProminentParsed;
   } finally {
-    await context.close();
+    try { await page.close(); } catch (_) { }
   }
 
   // 2) Company root nav: strictly "Jobs (X)" or "Jobs X"
-  context = await browser.newContext(await maybeStorageState());
   page = await context.newPage();
   try {
     await safeGoto(page, baseUrl);
@@ -164,23 +166,22 @@ async function getJobsCount(browser, baseUrl) {
     const fromNav = parseHumanNumber(navJobsText);
     if (fromNav) return fromNav;
   } finally {
-    await context.close();
+    try { await page.close(); } catch (_) { }
   }
 
   // 3) Final fallback: Use Jobs Search filtered by company ID
-  const orgId = await getCompanyId(browser, baseUrl).catch(() => null);
+  const orgId = await getCompanyId(context, baseUrl).catch(() => null);
   if (orgId) {
-    const viaSearch = await getJobsCountViaSearch(browser, orgId).catch(() => null);
+    const viaSearch = await getJobsCountViaSearch(context, orgId).catch(() => null);
     if (viaSearch) return viaSearch;
   }
 
   return null;
 }
 
-async function getEmployeeCount(browser, baseUrl) {
+async function getEmployeeCount(context, baseUrl) {
   // Primary: /people page shows total employees on LinkedIn
   const peopleUrl = new URL('people/', baseUrl).toString();
-  let context = await browser.newContext(await maybeStorageState());
   let page = await context.newPage();
   try {
     await safeGoto(page, peopleUrl);
@@ -219,12 +220,11 @@ async function getEmployeeCount(browser, baseUrl) {
     const employees = await extractCountByPatterns(page, patterns);
     if (employees) return { employeeCount: employees, employeeCountRange: null };
   } finally {
-    await context.close();
+    try { await page.close(); } catch (_) { }
   }
 
   // Fallback: /about page may show a size range (e.g., 51-200 employees)
   const aboutUrl = new URL('about/', baseUrl).toString();
-  context = await browser.newContext(await maybeStorageState());
   page = await context.newPage();
   try {
     await safeGoto(page, aboutUrl);
@@ -242,13 +242,13 @@ async function getEmployeeCount(browser, baseUrl) {
 
     if (range) return { employeeCount: null, employeeCountRange: range };
   } finally {
-    await context.close();
+    try { await page.close(); } catch (_) { }
   }
 
   // Final fallback: people search totals
-  const orgId = await getCompanyId(browser, baseUrl).catch(() => null);
+  const orgId = await getCompanyId(context, baseUrl).catch(() => null);
   if (orgId) {
-    const viaPeopleSearch = await getEmployeeCountViaSearch(browser, orgId).catch(() => null);
+    const viaPeopleSearch = await getEmployeeCountViaSearch(context, orgId).catch(() => null);
     if (viaPeopleSearch) return viaPeopleSearch;
   }
 
@@ -286,8 +286,7 @@ async function maybeStorageState() {
   return {};
 }
 
-async function getCompanyId(browser, baseUrl) {
-  const context = await browser.newContext(await maybeStorageState());
+async function getCompanyId(context, baseUrl) {
   const page = await context.newPage();
   try {
     await safeGoto(page, baseUrl);
@@ -304,12 +303,11 @@ async function getCompanyId(browser, baseUrl) {
     });
     return ids?.[0] || null;
   } finally {
-    await context.close();
+    try { await page.close(); } catch (_) { }
   }
 }
 
-async function getJobsCountViaSearch(browser, orgId) {
-  const context = await browser.newContext(await maybeStorageState());
+async function getJobsCountViaSearch(context, orgId) {
   const page = await context.newPage();
   try {
     const searchUrl = `https://www.linkedin.com/jobs/search/?f_C=${encodeURIComponent(orgId)}&refresh=true`;
@@ -339,14 +337,14 @@ async function getJobsCountViaSearch(browser, orgId) {
           if (!foundTotal || max > foundTotal) foundTotal = max;
           logDebug('jobs total from network', url, max);
         }
-      } catch (_) {}
+      } catch (_) { }
     });
 
     await safeGoto(page, searchUrl);
 
     // Wait for main content to appear
-    try { await page.waitForSelector('main, #main-content, .jobs-search-two-pane__results', { timeout: 20000 }); } catch(_) {}
-    try { await page.waitForTimeout(2000); } catch(_) {}
+    try { await page.waitForSelector('main, #main-content, .jobs-search-two-pane__results', { timeout: 20000 }); } catch (_) { }
+    try { await page.waitForTimeout(2000); } catch (_) { }
 
     // If network parsing found a total, prefer it
     if (foundTotal) return foundTotal;
@@ -365,7 +363,7 @@ async function getJobsCountViaSearch(browser, orgId) {
       ];
       for (const t of texts) {
         const m = t.match(/^(\d[\d,.]*[km]?\+?)\s+(?:job|jobs|result|results)\b/i)
-              || t.match(/(?:job|jobs|result|results)\s*[()\-:]?\s*(\d[\d,.]*[km]?\+?)/i);
+          || t.match(/(?:job|jobs|result|results)\s*[()\-:]?\s*(\d[\d,.]*[km]?\+?)/i);
         if (m && (m[1] || m[2])) return (m[1] || m[2]);
       }
       return null;
@@ -386,12 +384,11 @@ async function getJobsCountViaSearch(browser, orgId) {
     if (cardCount && cardCount > 0) return cardCount;
     return null;
   } finally {
-    await context.close();
+    try { await page.close(); } catch (_) { }
   }
 }
 
-async function getEmployeeCountViaSearch(browser, orgId) {
-  const context = await browser.newContext(await maybeStorageState());
+async function getEmployeeCountViaSearch(context, orgId) {
   const page = await context.newPage();
   try {
     const searchUrl = `https://www.linkedin.com/search/results/people/?currentCompany=${encodeURIComponent(orgId)}&origin=COMPANY_PAGE_CANNED_SEARCH`;
@@ -421,12 +418,12 @@ async function getEmployeeCountViaSearch(browser, orgId) {
           if (!foundTotal || max > foundTotal) foundTotal = max;
           logDebug('employees total from network', url, max);
         }
-      } catch (_) {}
+      } catch (_) { }
     });
 
     await safeGoto(page, searchUrl);
-    try { await page.waitForSelector('main, #main-content', { timeout: 15000 }); } catch(_) {}
-    try { await page.waitForTimeout(2000); } catch(_) {}
+    try { await page.waitForSelector('main, #main-content', { timeout: 15000 }); } catch (_) { }
+    try { await page.waitForTimeout(2000); } catch (_) { }
 
     if (foundTotal) {
       return { employeeCount: foundTotal, employeeCountRange: null };
@@ -457,35 +454,147 @@ async function getEmployeeCountViaSearch(browser, orgId) {
 
     return { employeeCount: null, employeeCountRange: null };
   } finally {
-    await context.close();
+    try { await page.close(); } catch (_) { }
   }
+}
+
+// Fresh incognito context with authentication
+async function getIncognitoContext(headless) {
+  const browser = await chromium.launch({ headless });
+  const context = await browser.newContext({
+    viewport: { width: 1366, height: 768 },
+    colorScheme: 'light',
+    timezoneId: process.env.PLAYWRIGHT_TZ || 'UTC',
+    locale: process.env.PLAYWRIGHT_LOCALE || 'en-US',
+    userAgent: process.env.PLAYWRIGHT_UA || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+  });
+
+  // Try to add LI_AT cookie if available
+  const liAt = process.env.LI_AT || process.env.LINKEDIN_LI_AT;
+  if (liAt) {
+    const thirtyDaysFromNowSeconds = Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 30;
+    await context.addCookies([{
+      name: 'li_at', value: liAt, domain: '.linkedin.com', path: '/',
+      expires: thirtyDaysFromNowSeconds, httpOnly: true, secure: true, sameSite: 'Lax'
+    }]);
+  } else {
+    // If no LI_AT cookie, perform fresh login
+    const email = process.env.LINKEDIN_EMAIL;
+    const password = process.env.LINKEDIN_PASSWORD;
+
+    if (!email || !password) {
+      throw new Error('Incognito mode requires either LI_AT cookie or LINKEDIN_EMAIL/LINKEDIN_PASSWORD in environment');
+    }
+
+    const page = await context.newPage();
+    try {
+      console.log('Performing fresh login for incognito mode...');
+      await page.goto('https://www.linkedin.com/login', { waitUntil: 'domcontentloaded' });
+      await page.fill('#username', email, { timeout: 15000 });
+      await page.fill('#password', password, { timeout: 15000 });
+      await Promise.all([
+        page.click('button[type="submit"]'),
+        page.waitForLoadState('networkidle')
+      ]);
+
+      // Wait for successful login
+      try {
+        await page.waitForURL(/https:\/\/www\.linkedin\.com\/feed\//, { timeout: 20000 });
+      } catch (_) {
+        await page.waitForSelector('header.global-nav', { timeout: 20000 });
+      }
+      console.log('Fresh login successful');
+    } finally {
+      await page.close();
+    }
+  }
+
+  return context;
+}
+
+// Persistent context (user data dir) to keep session stable across runs
+let persistentContextPromise = null;
+async function getPersistentContext(headless) {
+  if (persistentContextPromise) return persistentContextPromise;
+  const userDataDir = process.env.PLAYWRIGHT_USER_DATA_DIR || path.resolve(__dirname, '..', 'user-data');
+  const consistentUserAgent = process.env.PLAYWRIGHT_UA || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36';
+  const contextOptions = {
+    headless: headless ?? parseBoolean(process.env.HEADLESS, true),
+    viewport: { width: 1366, height: 768 },
+    colorScheme: 'light',
+    timezoneId: process.env.PLAYWRIGHT_TZ || 'UTC',
+    locale: process.env.PLAYWRIGHT_LOCALE || 'en-US',
+    userAgent: consistentUserAgent,
+    // Add stealth options to avoid detection
+    extraHTTPHeaders: {
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+      'Accept-Language': 'en-US,en;q=0.5',
+      'Accept-Encoding': 'gzip, deflate',
+      'DNT': '1',
+      'Connection': 'keep-alive',
+      'Upgrade-Insecure-Requests': '1',
+    },
+  };
+  persistentContextPromise = chromium.launchPersistentContext(userDataDir, contextOptions)
+    .then(async (ctx) => {
+      // Inject LI_AT cookie if provided and not present
+      const liAt = process.env.LI_AT || process.env.LINKEDIN_LI_AT;
+      if (liAt) {
+        const existing = await ctx.cookies('https://www.linkedin.com');
+        const hasCookie = existing?.some(c => c.name === 'li_at');
+        if (!hasCookie) {
+          const thirtyDaysFromNowSeconds = Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 30;
+          await ctx.addCookies([{
+            name: 'li_at', value: liAt, domain: '.linkedin.com', path: '/',
+            expires: thirtyDaysFromNowSeconds, httpOnly: true, secure: true, sameSite: 'Lax'
+          }]);
+        }
+      }
+      // Save storage state for external use (best-effort)
+      try {
+        await persistStorageState(ctx);
+      } catch (_) { }
+      return ctx;
+    });
+  return persistentContextPromise;
+}
+
+async function persistStorageState(context) {
+  const storageStatePath = path.resolve(__dirname, '..', 'storageState.json');
+  try { await context.storageState({ path: storageStatePath }); } catch (_) { }
 }
 
 async function scrapeCompany(urlOrSlug, options = {}) {
   const headless = options.headless ?? parseBoolean(process.env.HEADLESS, true);
+  const incognito = options.incognito ?? false;
   const rawUrl = String(urlOrSlug || '').trim();
   if (!rawUrl) throw new Error('Missing LinkedIn company URL');
 
-  let companyUrl;
-  companyUrl = ensureCompanyUrl(rawUrl);
+  const companyUrl = ensureCompanyUrl(rawUrl);
 
-  const browser = await chromium.launch({ headless });
-  try {
-    const [jobsPostedCount, employee] = await Promise.all([
-      getJobsCount(browser, companyUrl),
-      getEmployeeCount(browser, companyUrl)
-    ]);
-
-    return {
-      companyUrl,
-      jobsPostedCount: jobsPostedCount ?? null,
-      employeeCount: employee?.employeeCount ?? null,
-      employeeCountRange: employee?.employeeCountRange ?? null,
-      fetchedAt: new Date().toISOString()
-    };
-  } finally {
-    await browser.close();
+  let context;
+  if (incognito) {
+    // Use fresh incognito context with authentication
+    context = await getIncognitoContext(headless);
+  } else {
+    context = await getPersistentContext(headless);
   }
+
+  const [jobsPostedCount, employee] = await Promise.all([
+    getJobsCount(context, companyUrl),
+    getEmployeeCount(context, companyUrl)
+  ]);
+
+  // Save latest state after scrape
+  try { await persistStorageState(context); } catch (_) { }
+
+  return {
+    companyUrl,
+    jobsPostedCount: jobsPostedCount ?? null,
+    employeeCount: employee?.employeeCount ?? null,
+    employeeCountRange: employee?.employeeCountRange ?? null,
+    fetchedAt: new Date().toISOString()
+  };
 }
 
 async function main() {

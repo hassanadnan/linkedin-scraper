@@ -62,7 +62,11 @@ async function loginAndSaveStorage() {
   }
 }
 
-loginAndSaveStorage().catch((err) => {
-  console.error('Login failed:', err?.message || err);
-  process.exit(1);
-});
+if (require.main === module) {
+  loginAndSaveStorage().catch((err) => {
+    console.error('Login failed:', err?.message || err);
+    process.exit(1);
+  });
+}
+
+module.exports = { loginAndSaveStorage };

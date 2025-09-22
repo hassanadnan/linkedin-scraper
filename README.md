@@ -2,7 +2,9 @@
 
 Scrapes a LinkedIn company URL to extract the jobs posted count and the employee count using Playwright (Chromium).
 
-### Prerequisites
+🚀 **Ready to Use**: This API is deployed on Railway with authentication already configured. See [USAGE.md](./USAGE.md) for quick start guide.
+
+### Prerequisites (for local development)
 - Node.js 18+
 - A LinkedIn account (for best results). Some data requires authentication.
 
@@ -68,3 +70,13 @@ Auth options:
    - Set env vars in Railway: `HEADLESS=true` (recommended), optionally `LINKEDIN_EMAIL`, `LINKEDIN_PASSWORD` if you plan to run `npm run login` once via a shell
 4. Expose port by setting `PORT` (Railway sets it automatically). The command is `node src/server.js` from the Dockerfile.
 5. After deploy, call: `https://<your-railway-domain>/scrape?url=https://www.linkedin.com/company/microsoft/`
+
+### Public API Usage
+If you're using someone else's deployed version, no setup required! Just make HTTP requests to their Railway URL. See [USAGE.md](./USAGE.md) for examples.
+
+**Quick Test:**
+```bash
+curl "https://YOUR_RAILWAY_URL/scrape?url=microsoft"
+```
+
+Replace `YOUR_RAILWAY_URL` with the actual Railway deployment URL.

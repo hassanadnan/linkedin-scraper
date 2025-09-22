@@ -75,23 +75,37 @@ function deepFindTotals(obj, out = []) {
 async function resolveOrgId(companyUrl, liAt) {
   const headers = buildHeaders(liAt);
   const timeout = Number(process.env.VOYAGER_TIMEOUT_MS || 12000);
+  const errors = [];
+  
   // 1) Try public HTML
   try {
     const html = await fetchText(companyUrl, headers, timeout);
     const orgId = findFirstOrgIdInHtml(html);
     if (orgId) return orgId;
-  } catch (_) {}
+    errors.push('HTML method: No org ID found in page content');
+  } catch (err) {
+    errors.push(`HTML method: ${err.message}`);
+  }
 
   // 2) Try Voyager vanityName lookup using slug
   const vanity = extractVanity(companyUrl);
   if (vanity) {
-    const url = `https://www.linkedin.com/voyager/api/organization/companies?vanityName=${encodeURIComponent(vanity)}`;
-    const json = await fetchJson(url, headers, timeout).catch(() => null);
-    if (json) {
-      const asString = JSON.stringify(json);
-      const v = findFirstOrgIdInHtml(asString);
-      if (v) return v;
+    try {
+      const url = `https://www.linkedin.com/voyager/api/organization/companies?vanityName=${encodeURIComponent(vanity)}`;
+      const json = await fetchJson(url, headers, timeout);
+      if (json) {
+        const asString = JSON.stringify(json);
+        const v = findFirstOrgIdInHtml(asString);
+        if (v) return v;
+        errors.push('Voyager API method: No org ID found in API response');
+      } else {
+        errors.push('Voyager API method: Empty response');
+      }
+    } catch (err) {
+      errors.push(`Voyager API method: ${err.message}`);
     }
+  } else {
+    errors.push('Voyager API method: Could not extract vanity name from URL');
   }
 
   // 3) Try /about page HTML
@@ -100,9 +114,12 @@ async function resolveOrgId(companyUrl, liAt) {
     const html = await fetchText(aboutUrl, headers, timeout);
     const orgId = findFirstOrgIdInHtml(html);
     if (orgId) return orgId;
-  } catch (_) {}
+    errors.push('About page method: No org ID found in about page');
+  } catch (err) {
+    errors.push(`About page method: ${err.message}`);
+  }
 
-  throw new Error('Could not resolve organization ID from company page');
+  throw new Error(`Could not resolve organization ID from company page. Attempts: ${errors.join('; ')}`);
 }
 
 async function voyagerEmployeesTotal(orgId, liAt) {
