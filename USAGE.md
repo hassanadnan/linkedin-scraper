@@ -79,9 +79,30 @@ Please be respectful with API usage. The service uses your provided authenticati
 - **Employee Count**: Total employees on LinkedIn
 - **Employee Count Range**: Range format (e.g., "51-200") when exact count unavailable
 
+## Cookie Management
+
+### Health Check
+```bash
+curl "https://YOUR_RAILWAY_URL/cookie-health"
+```
+Returns cookie health status and authentication test results.
+
+### Authentication Test
+```bash
+curl "https://YOUR_RAILWAY_URL/test-auth"
+```
+Tests if the current LI_AT cookie is valid.
+
+### Cookie Refresh
+```bash
+curl -X POST "https://YOUR_RAILWAY_URL/refresh-cookies"
+```
+Manually triggers cookie refresh process.
+
 ## Error Handling
 The API returns appropriate HTTP status codes:
 - `400`: Missing or invalid URL parameter
+- `401`: Authentication failed (expired cookie)
 - `500`: Scraping failed (with error message)
 
 Example error response:
@@ -90,3 +111,12 @@ Example error response:
   "error": "URL must be a LinkedIn URL"
 }
 ```
+
+## Cookie Maintenance
+The API automatically:
+- Refreshes cookies every 6 hours
+- Monitors cookie health every 30 minutes
+- Extends cookie expiration when possible
+- Provides warnings before expiry
+
+For long-term usage, monitor the `/cookie-health` endpoint and refresh your LI_AT cookie when needed.

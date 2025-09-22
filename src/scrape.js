@@ -703,17 +703,38 @@ async function getPersistentContext(headless) {
         const existing = await ctx.cookies('https://www.linkedin.com');
         const hasCookie = existing?.some(c => c.name === 'li_at');
         if (!hasCookie) {
-          const thirtyDaysFromNowSeconds = Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 30;
+          // Set cookie with longer expiration (60 days)
+          const sixtyDaysFromNowSeconds = Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 60;
           await ctx.addCookies([{
             name: 'li_at', value: liAt, domain: '.linkedin.com', path: '/',
-            expires: thirtyDaysFromNowSeconds, httpOnly: true, secure: true, sameSite: 'Lax'
+            expires: sixtyDaysFromNowSeconds, httpOnly: true, secure: true, sameSite: 'Lax'
           }]);
+          logDebug('LI_AT cookie injected with 60-day expiration');
+        } else {
+          logDebug('LI_AT cookie already present');
         }
       }
-      // Save storage state for external use (best-effort)
+      
+      // Initial cookie refresh
       try {
-        await persistStorageState(ctx);
-      } catch (_) { }
+        await refreshCookies(ctx);
+      } catch (_) {}
+      
+      // Set up periodic cookie refresh (every 6 hours)
+      const refreshInterval = setInterval(async () => {
+        try {
+          await refreshCookies(ctx);
+        } catch (err) {
+          logDebug('Periodic cookie refresh failed:', err.message);
+        }
+      }, 6 * 60 * 60 * 1000); // 6 hours
+      
+      // Clean up interval when context is closed
+      ctx.on('close', () => {
+        clearInterval(refreshInterval);
+        logDebug('Cookie refresh interval cleared');
+      });
+      
       return ctx;
     });
   return persistentContextPromise;
@@ -721,7 +742,45 @@ async function getPersistentContext(headless) {
 
 async function persistStorageState(context) {
   const storageStatePath = path.resolve(__dirname, '..', 'storageState.json');
-  try { await context.storageState({ path: storageStatePath }); } catch (_) { }
+  try { 
+    await context.storageState({ path: storageStatePath }); 
+    logDebug('Storage state saved to:', storageStatePath);
+  } catch (err) { 
+    logDebug('Failed to save storage state:', err.message);
+  }
+}
+
+// Function to refresh cookies by making authenticated requests
+async function refreshCookies(context) {
+  logDebug('Refreshing cookies...');
+  const page = await context.newPage();
+  try {
+    // Visit LinkedIn pages to refresh session
+    const refreshUrls = [
+      'https://www.linkedin.com/feed/',
+      'https://www.linkedin.com/me/',
+      'https://www.linkedin.com/notifications/'
+    ];
+    
+    for (const url of refreshUrls) {
+      try {
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 10000 });
+        await page.waitForTimeout(1000);
+        logDebug('Refreshed session with:', url);
+        break; // Success, no need to try other URLs
+      } catch (err) {
+        logDebug('Failed to refresh with:', url, err.message);
+      }
+    }
+    
+    // Save updated cookies
+    await persistStorageState(context);
+    logDebug('Cookie refresh completed');
+  } catch (err) {
+    logDebug('Cookie refresh failed:', err.message);
+  } finally {
+    try { await page.close(); } catch (_) {}
+  }
 }
 
 async function scrapeCompany(urlOrSlug, options = {}) {

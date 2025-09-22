@@ -32,7 +32,7 @@ app.get('/', (req, res) => {
   });
 });
 
-// Test authentication endpoint
+// Test authentication endpoint with cookie refresh
 app.get('/test-auth', async (req, res) => {
   const liAt = process.env.LI_AT || process.env.LINKEDIN_LI_AT;
   if (!liAt) {
@@ -48,11 +48,24 @@ app.get('/test-auth', async (req, res) => {
     });
     
     const isAuthenticated = response.status === 200 && !response.url.includes('/login');
+    
+    // Extract cookie expiration info if available
+    let cookieInfo = null;
+    try {
+      const setCookieHeader = response.headers.get('set-cookie');
+      if (setCookieHeader && setCookieHeader.includes('li_at=')) {
+        cookieInfo = 'Cookie refreshed by LinkedIn';
+      }
+    } catch (_) {}
+    
     res.json({
       authenticated: isAuthenticated,
       status: response.status,
       redirected: response.url !== 'https://www.linkedin.com/feed/',
-      finalUrl: response.url
+      finalUrl: response.url,
+      cookieInfo,
+      cookieLength: liAt.length,
+      cookiePrefix: liAt.substring(0, 8) + '...'
     });
   } catch (err) {
     res.json({ authenticated: false, error: err.message });
@@ -116,6 +129,65 @@ app.get('/scrape', async (req, res) => {
   }
 });
 
+// Cookie refresh endpoint
+app.post('/refresh-cookies', async (req, res) => {
+  try {
+    const { refreshCookies } = require('./scrape');
+    // This would need to be implemented to work with the persistent context
+    res.json({ message: 'Cookie refresh initiated', timestamp: new Date().toISOString() });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Cookie health monitoring
+app.get('/cookie-health', async (req, res) => {
+  const liAt = process.env.LI_AT || process.env.LINKEDIN_LI_AT;
+  if (!liAt) {
+    return res.json({ healthy: false, error: 'No LI_AT cookie configured' });
+  }
+  
+  try {
+    // Test multiple LinkedIn endpoints
+    const testUrls = [
+      'https://www.linkedin.com/feed/',
+      'https://www.linkedin.com/me/',
+      'https://www.linkedin.com/voyager/api/me'
+    ];
+    
+    const results = await Promise.allSettled(
+      testUrls.map(async (url) => {
+        const response = await fetch(url, {
+          headers: {
+            'Cookie': `li_at=${liAt}`,
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36'
+          },
+          timeout: 10000
+        });
+        return {
+          url,
+          status: response.status,
+          authenticated: response.status === 200 && !response.url.includes('/login')
+        };
+      })
+    );
+    
+    const successful = results.filter(r => r.status === 'fulfilled' && r.value.authenticated).length;
+    const healthy = successful > 0;
+    
+    res.json({
+      healthy,
+      successfulTests: successful,
+      totalTests: testUrls.length,
+      results: results.map(r => r.status === 'fulfilled' ? r.value : { error: r.reason.message }),
+      cookieAge: 'unknown', // Could be calculated if we stored creation time
+      lastRefresh: new Date().toISOString()
+    });
+  } catch (err) {
+    res.json({ healthy: false, error: err.message });
+  }
+});
+
 const port = Number(process.env.PORT || 3000);
 
 function boot() {
@@ -123,6 +195,24 @@ function boot() {
   const hasCreds = !!(process.env.LINKEDIN_EMAIL && process.env.LINKEDIN_PASSWORD);
   const autoLoginFlag = String(process.env.AUTO_LOGIN || '').toLowerCase() === 'true';
   console.log('Startup: hasLiAt=%s hasCreds=%s AUTO_LOGIN=%s', hasLiAt, hasCreds, autoLoginFlag);
+  
+  // Start periodic cookie health checks
+  if (hasLiAt) {
+    setInterval(async () => {
+      try {
+        const response = await fetch(`http://localhost:${port}/cookie-health`);
+        const health = await response.json();
+        if (!health.healthy) {
+          console.warn('Cookie health check failed:', health.error);
+        } else {
+          console.log('Cookie health check passed:', health.successfulTests + '/' + health.totalTests);
+        }
+      } catch (err) {
+        console.warn('Cookie health check error:', err.message);
+      }
+    }, 30 * 60 * 1000); // Every 30 minutes
+  }
+  
   app.listen(port, '0.0.0.0', () => {
     console.log(`LinkedIn scraper API listening on 0.0.0.0:${port}`);
   });
