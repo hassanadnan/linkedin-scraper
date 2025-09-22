@@ -107,11 +107,45 @@ async function resolveOrgId(companyUrl, liAt) {
 
 async function voyagerEmployeesTotal(orgId, liAt) {
   const headers = buildHeaders(liAt);
-  const url = `https://www.linkedin.com/voyager/api/search/blended?count=1&filters=List(currentCompany-%3E${encodeURIComponent(orgId)})&origin=COMPANY_PAGE_CANNED_SEARCH&q=all`;
-  const json = await fetchJson(url, headers, Number(process.env.VOYAGER_TIMEOUT_MS || 12000)).catch(() => null);
-  if (!json) return null;
-  const totals = deepFindTotals(json);
-  return totals.length ? Math.max(...totals) : null;
+  const timeout = Number(process.env.VOYAGER_TIMEOUT_MS || 12000);
+
+  // 1) People-only blended search
+  const blendedPeople = `https://www.linkedin.com/voyager/api/search/blended?count=1&filters=List(resultType-%3EPEOPLE,currentCompany-%3E${encodeURIComponent(orgId)})&origin=COMPANY_PAGE_CANNED_SEARCH&q=all`;
+  const j1 = await fetchJson(blendedPeople, headers, timeout).catch(() => null);
+  if (j1) {
+    const t = deepFindTotals(j1);
+    if (t.length) return Math.max(...t);
+  }
+
+  // 2) Guided people cluster (often returns exact totals)
+  const guided = `https://www.linkedin.com/voyager/api/search/cluster?count=0&guides=List(currentCompany-%3E${encodeURIComponent(orgId)})&origin=COMPANY_PAGE_CANNED_SEARCH&q=guided`;
+  const j2 = await fetchJson(guided, headers, timeout).catch(() => null);
+  if (j2) {
+    const t = deepFindTotals(j2);
+    if (t.length) return Math.max(...t);
+  }
+
+  // 3) Organization company record may include staff ranges
+  // Try vanity path: we don't have vanity here; many large orgs expose range only
+  // This is a soft attempt via organization URN
+  const companyApiCandidates = [
+    `https://www.linkedin.com/voyager/api/organization/companies/${encodeURIComponent(orgId)}`
+  ];
+  for (const url of companyApiCandidates) {
+    const j = await fetchJson(url, headers, timeout).catch(() => null);
+    if (!j) continue;
+    const txt = JSON.stringify(j);
+    // Extract ranges like "staffCountRange":{"start":10001}
+    const mStart = txt.match(/staffCountRange\":\{\"start\":(\d+)/);
+    if (mStart) {
+      const n = Number(mStart[1]);
+      if (Number.isFinite(n)) return n;
+    }
+    const t = deepFindTotals(j);
+    if (t.length) return Math.max(...t);
+  }
+
+  return null;
 }
 
 async function voyagerJobsTotal(orgId, liAt) {
