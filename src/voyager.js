@@ -175,14 +175,32 @@ async function voyagerJobsTotal(orgId, liAt) {
   return null;
 }
 
+async function voyagerAssociatedMembers(companyUrl, liAt) {
+  const headers = buildHeaders(liAt);
+  const timeout = Number(process.env.VOYAGER_TIMEOUT_MS || 12000);
+  const vanity = extractVanity(companyUrl);
+  if (!vanity) return null;
+  const peopleUrl = `https://www.linkedin.com/company/${encodeURIComponent(vanity)}/people/`;
+  const html = await fetchText(peopleUrl, headers, timeout).catch(() => null);
+  if (!html) return null;
+  const m = html.match(/([\d,.]+)\s+associated\s+members/i);
+  if (m && m[1]) {
+    const num = Number(m[1].replace(/[,]/g, ''));
+    if (Number.isFinite(num)) return num;
+  }
+  return null;
+}
+
 async function voyagerScrape(companyUrl) {
   const liAt = process.env.LI_AT || process.env.LINKEDIN_LI_AT;
   if (!liAt) throw new Error('LI_AT cookie required for Voyager mode');
   const orgId = await resolveOrgId(companyUrl, liAt);
-  const [employeeCount, jobsPostedCount] = await Promise.all([
+  const [associatedMembers, employeeCountFallback, jobsPostedCount] = await Promise.all([
+    voyagerAssociatedMembers(companyUrl, liAt),
     voyagerEmployeesTotal(orgId, liAt),
     voyagerJobsTotal(orgId, liAt)
   ]);
+  const employeeCount = associatedMembers ?? employeeCountFallback ?? null;
   return { orgId, employeeCount, jobsPostedCount };
 }
 
