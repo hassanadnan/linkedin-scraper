@@ -1,15 +1,47 @@
 const crypto = require('crypto');
 
 function buildHeaders(liAt) {
+  const cookieManager = require('./cookieManager');
   const csrf = `ajax:${crypto.randomBytes(8).toString('hex')}`;
-  const cookie = [`li_at=${liAt}`, `JSESSIONID="${csrf}"`].join('; ');
+  
+  // Build comprehensive cookie string
+  const cookieParts = [`JSESSIONID="${csrf}"`];
+  
+  // Add li_at (primary)
+  if (liAt) {
+    cookieParts.push(`li_at=${liAt}`);
+  }
+  
+  // Add additional cookies from environment
+  const additionalCookies = {
+    'bcookie': process.env.LI_BCOOKIE,
+    'bscookie': process.env.LI_BSCOOKIE,
+    'liap': process.env.LI_LIAP,
+    'li_rm': process.env.LI_RM,
+    'lidc': process.env.LI_LIDC,
+    'li_mc': process.env.LI_MC,
+    'li_sugr': process.env.LI_SUGR
+  };
+  
+  Object.entries(additionalCookies).forEach(([name, value]) => {
+    if (value) {
+      cookieParts.push(`${name}=${value}`);
+    }
+  });
+  
+  const cookie = cookieParts.join('; ');
+  
   return {
     'accept': 'application/vnd.linkedin.normalized+json+2.1',
     'accept-language': 'en-US,en;q=0.9',
     'csrf-token': csrf,
     'cookie': cookie,
     'x-restli-protocol-version': '2.0.0',
-    'user-agent': process.env.PLAYWRIGHT_UA || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36'
+    'user-agent': process.env.PLAYWRIGHT_UA || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+    'referer': 'https://www.linkedin.com/',
+    'sec-fetch-dest': 'empty',
+    'sec-fetch-mode': 'cors',
+    'sec-fetch-site': 'same-origin'
   };
 }
 

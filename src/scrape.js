@@ -697,22 +697,40 @@ async function getPersistentContext(headless) {
         );
       });
       
-      // Inject LI_AT cookie if provided and not present
-      const liAt = process.env.LI_AT || process.env.LINKEDIN_LI_AT;
-      if (liAt) {
-        const existing = await ctx.cookies('https://www.linkedin.com');
-        const hasCookie = existing?.some(c => c.name === 'li_at');
-        if (!hasCookie) {
-          // Set cookie with longer expiration (60 days)
-          const sixtyDaysFromNowSeconds = Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 60;
-          await ctx.addCookies([{
-            name: 'li_at', value: liAt, domain: '.linkedin.com', path: '/',
-            expires: sixtyDaysFromNowSeconds, httpOnly: true, secure: true, sameSite: 'Lax'
-          }]);
-          logDebug('LI_AT cookie injected with 60-day expiration');
-        } else {
-          logDebug('LI_AT cookie already present');
+      // Inject all available LinkedIn cookies
+      const cookieManager = require('./cookieManager');
+      const existing = await ctx.cookies('https://www.linkedin.com');
+      const existingNames = existing.map(c => c.name);
+      
+      const cookiesToAdd = [];
+      const sixtyDaysFromNowSeconds = Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 60;
+      
+      // Add all LinkedIn cookies from environment
+      Object.keys(process.env).forEach(key => {
+        if (key.startsWith('LI_') && process.env[key]) {
+          let cookieName = key.toLowerCase().replace('li_', '');
+          if (cookieName === 'at') cookieName = 'li_at';
+          
+          if (!existingNames.includes(cookieName)) {
+            cookiesToAdd.push({
+              name: cookieName,
+              value: process.env[key],
+              domain: '.linkedin.com',
+              path: '/',
+              expires: sixtyDaysFromNowSeconds,
+              httpOnly: cookieName === 'li_at', // Only li_at should be httpOnly
+              secure: true,
+              sameSite: 'Lax'
+            });
+          }
         }
+      });
+      
+      if (cookiesToAdd.length > 0) {
+        await ctx.addCookies(cookiesToAdd);
+        logDebug(`Injected ${cookiesToAdd.length} LinkedIn cookies:`, cookiesToAdd.map(c => c.name));
+      } else {
+        logDebug('All LinkedIn cookies already present or none configured');
       }
       
       // Initial cookie refresh

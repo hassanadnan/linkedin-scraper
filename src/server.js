@@ -140,11 +140,35 @@ app.post('/refresh-cookies', async (req, res) => {
   }
 });
 
-// Cookie health monitoring
+// Session export instructions
+app.get('/session-export-guide', (req, res) => {
+  const cookieManager = require('./cookieManager');
+  const instructions = cookieManager.getSessionExportInstructions();
+  
+  res.json({
+    title: 'LinkedIn Session Export Guide',
+    description: 'Export your complete LinkedIn session for maximum stability',
+    ...instructions,
+    benefits: [
+      'Much more stable than single li_at cookie',
+      'Survives device and IP changes better',
+      'Includes session storage and local storage data',
+      'Provides redundancy with multiple authentication tokens'
+    ],
+    currentStatus: {
+      availableCookies: Object.keys(process.env).filter(key => key.startsWith('LI_')).length,
+      recommendedCookies: Object.keys(cookieManager.linkedinCookies).length
+    }
+  });
+});
+
+// Cookie health monitoring with multi-cookie support
 app.get('/cookie-health', async (req, res) => {
-  const liAt = process.env.LI_AT || process.env.LINKEDIN_LI_AT;
-  if (!liAt) {
-    return res.json({ healthy: false, error: 'No LI_AT cookie configured' });
+  const cookieManager = require('./cookieManager');
+  const cookieString = cookieManager.buildCookieString();
+  
+  if (!cookieString) {
+    return res.json({ healthy: false, error: 'No LinkedIn cookies configured' });
   }
   
   try {
@@ -159,15 +183,23 @@ app.get('/cookie-health', async (req, res) => {
       testUrls.map(async (url) => {
         const response = await fetch(url, {
           headers: {
-            'Cookie': `li_at=${liAt}`,
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36'
+            'Cookie': cookieString,
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Referer': 'https://www.linkedin.com/',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'same-origin'
           },
           timeout: 10000
         });
         return {
           url,
           status: response.status,
-          authenticated: response.status === 200 && !response.url.includes('/login')
+          authenticated: response.status === 200 && !response.url.includes('/login'),
+          finalUrl: response.url
         };
       })
     );
@@ -175,12 +207,22 @@ app.get('/cookie-health', async (req, res) => {
     const successful = results.filter(r => r.status === 'fulfilled' && r.value.authenticated).length;
     const healthy = successful > 0;
     
+    // Get available cookies info
+    const availableCookies = Object.keys(process.env)
+      .filter(key => key.startsWith('LI_'))
+      .map(key => ({
+        name: key,
+        hasValue: !!process.env[key],
+        length: process.env[key] ? process.env[key].length : 0
+      }));
+    
     res.json({
       healthy,
       successfulTests: successful,
       totalTests: testUrls.length,
       results: results.map(r => r.status === 'fulfilled' ? r.value : { error: r.reason.message }),
-      cookieAge: 'unknown', // Could be calculated if we stored creation time
+      availableCookies,
+      cookieString: cookieString.substring(0, 100) + '...', // Truncated for security
       lastRefresh: new Date().toISOString()
     });
   } catch (err) {
