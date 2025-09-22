@@ -269,86 +269,172 @@ async function voyagerAssociatedMembers(companyUrl, liAt, orgId) {
   const vanity = extractVanity(companyUrl);
   if (!vanity) return null;
 
-  // Strategy 1: Try Voyager API for company people data (most precise)
+  // Strategy 1: Try multiple Voyager API endpoints for company people data
   if (orgId) {
+    const apiEndpoints = [
+      `https://www.linkedin.com/voyager/api/organization/companies/${encodeURIComponent(orgId)}/people`,
+      `https://www.linkedin.com/voyager/api/organization/companies/${encodeURIComponent(orgId)}`,
+      `https://www.linkedin.com/voyager/api/organization/companies?vanityName=${encodeURIComponent(vanity)}`,
+      `https://www.linkedin.com/voyager/api/search/blended?count=0&filters=List(currentCompany-%3E${encodeURIComponent(orgId)})&origin=COMPANY_PAGE_CANNED_SEARCH&q=all`
+    ];
+    
+    for (const apiUrl of apiEndpoints) {
+      try {
+        const json = await fetchJson(apiUrl, headers, timeout);
+        if (json) {
+          const jsonStr = JSON.stringify(json);
+          // Look for total count in API response with more patterns
+          const patterns = [
+            /"total":\s*(\d+)/i,
+            /"totalResults":\s*(\d+)/i,
+            /"count":\s*(\d+)/i,
+            /"numResults":\s*(\d+)/i,
+            /"associatedMemberCount":\s*(\d+)/i,
+            /"staffCount":\s*(\d+)/i,
+            /"employeeCount":\s*(\d+)/i,
+            /"memberCount":\s*(\d+)/i,
+            /"totalCount":\s*(\d+)/i,
+            /"peopleCount":\s*(\d+)/i
+          ];
+          
+          for (const pattern of patterns) {
+            const match = jsonStr.match(pattern);
+            if (match && match[1]) {
+              const count = Number(match[1]);
+              if (Number.isFinite(count) && count > 100) { // Reasonable minimum for companies
+                console.log(`Found associated members via API (${apiUrl}): ${count}`);
+                return count;
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.log(`Voyager API endpoint failed (${apiUrl}):`, err.message);
+      }
+    }
+  }
+
+  // Strategy 2: Enhanced HTML parsing with multiple URLs and patterns
+  const peopleUrls = [
+    `https://www.linkedin.com/company/${encodeURIComponent(vanity)}/people/`,
+    `https://www.linkedin.com/company/${encodeURIComponent(vanity)}/`,
+    `https://www.linkedin.com/company/${encodeURIComponent(vanity)}/about/`
+  ];
+  
+  for (const peopleUrl of peopleUrls) {
     try {
-      const apiUrl = `https://www.linkedin.com/voyager/api/organization/companies/${encodeURIComponent(orgId)}/people`;
-      const json = await fetchJson(apiUrl, headers, timeout);
-      if (json) {
-        const jsonStr = JSON.stringify(json);
-        // Look for total count in API response
-        const patterns = [
-          /"total":\s*(\d+)/i,
-          /"totalResults":\s*(\d+)/i,
-          /"count":\s*(\d+)/i,
-          /"numResults":\s*(\d+)/i,
-          /"associatedMemberCount":\s*(\d+)/i
+      const html = await fetchText(peopleUrl, headers, timeout);
+      if (!html) continue;
+
+      // Multiple regex patterns for associated members (more comprehensive)
+      const patterns = [
+        // Direct patterns
+        /([\d,.]+)\s+associated\s+members/i,
+        /([\d,.]+)\s+members?\s+on\s+linkedin/i,
+        /([\d,.]+)\s+people\s+work\s+here/i,
+        /([\d,.]+)\s+employees?\s+on\s+linkedin/i,
+        /([\d,.]+)\s+current\s+employees/i,
+        /([\d,.]+)\s+team\s+members/i,
+        
+        // Link patterns
+        /see\s+all\s+([\d,.]+)\s+employees/i,
+        /view\s+all\s+([\d,.]+)\s+employees/i,
+        /browse\s+([\d,.]+)\s+employees/i,
+        /explore\s+([\d,.]+)\s+employees/i,
+        
+        // JSON patterns in HTML
+        /"associatedMemberCount":\s*([\d,.]+)/i,
+        /"totalCount":\s*([\d,.]+)/i,
+        /"memberCount":\s*([\d,.]+)/i,
+        /"employeeCount":\s*([\d,.]+)/i,
+        /"staffCount":\s*([\d,.]+)/i,
+        
+        // Alternative formats
+        /(\d{1,3}(?:,\d{3})*)\s+(?:associated\s+)?members/i,
+        /(\d{1,3}(?:,\d{3})*)\s+(?:current\s+)?employees/i,
+        /(\d{1,3}(?:,\d{3})*)\s+people\s+(?:work|working)/i
+      ];
+
+      for (const pattern of patterns) {
+        const match = html.match(pattern);
+        if (match && match[1]) {
+          const cleanNumber = match[1].replace(/[,]/g, '');
+          const num = Number(cleanNumber);
+          if (Number.isFinite(num) && num > 100) { // Reasonable minimum
+            console.log(`Found associated members via HTML pattern (${peopleUrl}): ${num}`);
+            return num;
+          }
+        }
+      }
+    } catch (err) {
+      console.log(`HTML parsing failed for ${peopleUrl}:`, err.message);
+    }
+  }
+
+  // Strategy 3: Look for JSON data embedded in HTML (from any successful HTML fetch)
+  for (const peopleUrl of peopleUrls) {
+    try {
+      const html = await fetchText(peopleUrl, headers, timeout);
+      if (!html) continue;
+      
+      // Look for embedded JSON data
+      const scriptMatches = html.match(/<script[^>]*>.*?<\/script>/gi) || [];
+      for (const script of scriptMatches) {
+        const jsonPatterns = [
+          /"associatedMemberCount":\s*(\d+)/i,
+          /"totalCount":\s*(\d+)/i,
+          /"memberCount":\s*(\d+)/i,
+          /"employeeCount":\s*(\d+)/i,
+          /"staffCount":\s*(\d+)/i,
+          /"peopleCount":\s*(\d+)/i
         ];
         
-        for (const pattern of patterns) {
-          const match = jsonStr.match(pattern);
+        for (const pattern of jsonPatterns) {
+          const match = script.match(pattern);
           if (match && match[1]) {
             const count = Number(match[1]);
-            if (Number.isFinite(count) && count > 0) {
-              console.log(`Found associated members via API: ${count}`);
+            if (Number.isFinite(count) && count > 100) {
+              console.log(`Found associated members via embedded JSON (${peopleUrl}): ${count}`);
               return count;
             }
           }
         }
       }
     } catch (err) {
-      console.log('Voyager API people endpoint failed:', err.message);
+      console.log(`JSON extraction failed for ${peopleUrl}:`, err.message);
     }
   }
 
-  // Strategy 2: Enhanced HTML parsing with multiple patterns
-  const peopleUrl = `https://www.linkedin.com/company/${encodeURIComponent(vanity)}/people/`;
-  const html = await fetchText(peopleUrl, headers, timeout).catch(() => null);
-  if (!html) return null;
-
-  // Multiple regex patterns for associated members
-  const patterns = [
-    /([\d,.]+)\s+associated\s+members/i,
-    /([\d,.]+)\s+members?\s+on\s+linkedin/i,
-    /([\d,.]+)\s+people\s+work\s+here/i,
-    /([\d,.]+)\s+employees?\s+on\s+linkedin/i,
-    /see\s+all\s+([\d,.]+)\s+employees/i,
-    /view\s+all\s+([\d,.]+)\s+employees/i,
-    /"associatedMemberCount":\s*([\d,.]+)/i,
-    /"totalCount":\s*([\d,.]+)/i
-  ];
-
-  for (const pattern of patterns) {
-    const match = html.match(pattern);
-    if (match && match[1]) {
-      const cleanNumber = match[1].replace(/[,]/g, '');
-      const num = Number(cleanNumber);
-      if (Number.isFinite(num) && num > 0) {
-        console.log(`Found associated members via HTML pattern: ${num}`);
-        return num;
-      }
-    }
-  }
-
-  // Strategy 3: Look for JSON data embedded in HTML
-  try {
-    const jsonMatches = html.match(/<script[^>]*>.*?"associatedMemberCount":\s*(\d+).*?<\/script>/gi);
-    if (jsonMatches) {
-      for (const jsonMatch of jsonMatches) {
-        const countMatch = jsonMatch.match(/"associatedMemberCount":\s*(\d+)/i);
-        if (countMatch && countMatch[1]) {
-          const count = Number(countMatch[1]);
-          if (Number.isFinite(count) && count > 0) {
-            console.log(`Found associated members via embedded JSON: ${count}`);
-            return count;
+  // Strategy 4: Try alternative company info endpoints
+  if (orgId) {
+    try {
+      const infoUrl = `https://www.linkedin.com/voyager/api/organization/companies/${encodeURIComponent(orgId)}/companyInsights`;
+      const json = await fetchJson(infoUrl, headers, timeout);
+      if (json) {
+        const jsonStr = JSON.stringify(json);
+        const patterns = [
+          /"staffCount":\s*(\d+)/i,
+          /"employeeCount":\s*(\d+)/i,
+          /"memberCount":\s*(\d+)/i
+        ];
+        
+        for (const pattern of patterns) {
+          const match = jsonStr.match(pattern);
+          if (match && match[1]) {
+            const count = Number(match[1]);
+            if (Number.isFinite(count) && count > 100) {
+              console.log(`Found associated members via company insights: ${count}`);
+              return count;
+            }
           }
         }
       }
+    } catch (err) {
+      console.log('Company insights API failed:', err.message);
     }
-  } catch (err) {
-    console.log('JSON extraction failed:', err.message);
   }
 
+  console.log('All associated members extraction strategies failed');
   return null;
 }
 
@@ -358,8 +444,19 @@ async function voyagerScrape(companyUrl) {
   const orgId = await resolveOrgId(companyUrl, liAt);
   
   // Try associated members first (most precise), then fallback methods
-  const [associatedMembers, employeeCountFallback, jobsPostedCount] = await Promise.all([
-    voyagerAssociatedMembers(companyUrl, liAt, orgId),
+  let associatedMembers = await voyagerAssociatedMembers(companyUrl, liAt, orgId);
+  
+  // If Voyager methods fail, try browser-based extraction as last resort
+  if (!associatedMembers) {
+    try {
+      console.log('Voyager associated members failed, trying browser fallback...');
+      associatedMembers = await browserAssociatedMembersFallback(companyUrl);
+    } catch (err) {
+      console.log('Browser fallback for associated members failed:', err.message);
+    }
+  }
+  
+  const [employeeCountFallback, jobsPostedCount] = await Promise.all([
     voyagerEmployeesTotal(orgId, liAt),
     voyagerJobsTotal(orgId, liAt)
   ]);
@@ -375,6 +472,14 @@ async function voyagerScrape(companyUrl) {
     jobsPostedCount,
     dataSource: associatedMembers ? 'associated_members' : (employeeCountFallback ? 'employee_search' : 'none')
   };
+}
+
+// Browser-based fallback for associated members (last resort)
+async function browserAssociatedMembersFallback(companyUrl) {
+  // This would require importing browser context from scrape.js
+  // For now, return null - can be implemented if needed
+  console.log('Browser fallback not implemented yet');
+  return null;
 }
 
 module.exports = { voyagerScrape };
