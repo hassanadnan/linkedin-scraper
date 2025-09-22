@@ -48,6 +48,18 @@ function findFirstOrgIdInHtml(html) {
   return null;
 }
 
+function extractVanity(inputUrl) {
+  try {
+    if (!/^https?:\/\//i.test(inputUrl)) return inputUrl.trim().replace(/\/$/, '');
+    const u = new URL(inputUrl);
+    const parts = u.pathname.split('/').filter(Boolean);
+    const idx = parts.findIndex(p => p.toLowerCase() === 'company');
+    if (idx >= 0 && parts[idx + 1]) return parts[idx + 1].replace(/\/$/, '');
+    if (parts[0]) return parts[0].replace(/\/$/, '');
+  } catch (_) {}
+  return null;
+}
+
 function deepFindTotals(obj, out = []) {
   if (!obj || typeof obj !== 'object') return out;
   for (const [k, v] of Object.entries(obj)) {
@@ -62,11 +74,35 @@ function deepFindTotals(obj, out = []) {
 
 async function resolveOrgId(companyUrl, liAt) {
   const headers = buildHeaders(liAt);
-  // Fetch the public HTML to extract orgId reliably
-  const html = await fetchText(companyUrl, headers, Number(process.env.VOYAGER_TIMEOUT_MS || 12000));
-  const orgId = findFirstOrgIdInHtml(html);
-  if (!orgId) throw new Error('Could not resolve organization ID from company page');
-  return orgId;
+  const timeout = Number(process.env.VOYAGER_TIMEOUT_MS || 12000);
+  // 1) Try public HTML
+  try {
+    const html = await fetchText(companyUrl, headers, timeout);
+    const orgId = findFirstOrgIdInHtml(html);
+    if (orgId) return orgId;
+  } catch (_) {}
+
+  // 2) Try Voyager vanityName lookup using slug
+  const vanity = extractVanity(companyUrl);
+  if (vanity) {
+    const url = `https://www.linkedin.com/voyager/api/organization/companies?vanityName=${encodeURIComponent(vanity)}`;
+    const json = await fetchJson(url, headers, timeout).catch(() => null);
+    if (json) {
+      const asString = JSON.stringify(json);
+      const v = findFirstOrgIdInHtml(asString);
+      if (v) return v;
+    }
+  }
+
+  // 3) Try /about page HTML
+  try {
+    const aboutUrl = companyUrl.endsWith('/') ? `${companyUrl}about/` : `${companyUrl}/about/`;
+    const html = await fetchText(aboutUrl, headers, timeout);
+    const orgId = findFirstOrgIdInHtml(html);
+    if (orgId) return orgId;
+  } catch (_) {}
+
+  throw new Error('Could not resolve organization ID from company page');
 }
 
 async function voyagerEmployeesTotal(orgId, liAt) {
