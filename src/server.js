@@ -76,6 +76,13 @@ app.get('/debug', (req, res) => {
 app.get('/scrape', async (req, res) => {
   const url = req.query.url || req.query.u;
   if (!url) return res.status(400).json({ error: 'Missing url parameter' });
+  
+  // Enable debug mode if requested
+  const debugMode = String(req.query.debug || '').toLowerCase() === 'true';
+  if (debugMode) {
+    process.env.DEBUG_SCRAPER = 'true';
+  }
+  
   try {
     // Default to Voyager if LI_AT present (fast), unless ?voyager=false
     const liAtPresent = !!(process.env.LI_AT || process.env.LINKEDIN_LI_AT);
@@ -101,6 +108,11 @@ app.get('/scrape', async (req, res) => {
   } catch (err) {
     const msg = err?.message || String(err);
     res.status(500).json({ error: msg });
+  } finally {
+    // Reset debug mode
+    if (debugMode) {
+      delete process.env.DEBUG_SCRAPER;
+    }
   }
 });
 

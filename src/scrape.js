@@ -81,21 +81,50 @@ async function extractCountByPatterns(page, regexList) {
 }
 
 async function safeGoto(page, url) {
-  // Relax wait condition; retry with incremental waits
-  try {
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
-  } catch (_) {
-    // ignore first error, try again
+  logDebug('Navigating to:', url);
+  
+  // Multiple retry strategy
+  let lastError = null;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      logDebug(`Navigation attempt ${attempt}/3`);
+      await page.goto(url, { 
+        waitUntil: 'domcontentloaded', 
+        timeout: 30000 
+      });
+      break;
+    } catch (err) {
+      lastError = err;
+      logDebug(`Navigation attempt ${attempt} failed:`, err.message);
+      if (attempt < 3) {
+        await page.waitForTimeout(2000 * attempt); // Progressive backoff
+      }
+    }
   }
+  
+  // Wait for page to stabilize
   try {
-    await page.waitForLoadState('domcontentloaded', { timeout: 15000 });
-  } catch (_) { }
-  // Best-effort network idle wait without failing
+    await page.waitForLoadState('domcontentloaded', { timeout: 10000 });
+  } catch (_) { 
+    logDebug('DOMContentLoaded timeout, continuing...');
+  }
+  
+  // Best-effort network idle wait
   try {
-    await page.waitForLoadState('networkidle', { timeout: 10000 });
-  } catch (_) { }
+    await page.waitForLoadState('networkidle', { timeout: 8000 });
+  } catch (_) { 
+    logDebug('NetworkIdle timeout, continuing...');
+  }
+  
+  // Check if we're blocked or redirected
+  const currentUrl = page.url();
+  if (currentUrl.includes('/login') || currentUrl.includes('/challenge')) {
+    logDebug('Detected login/challenge redirect:', currentUrl);
+    throw new Error('LinkedIn authentication required or challenge detected');
+  }
+  
   await dismissBanners(page);
-  logDebug('navigated', url);
+  logDebug('Successfully navigated to:', currentUrl);
 }
 
 async function dismissBanners(page) {
@@ -120,32 +149,86 @@ async function dismissBanners(page) {
 }
 
 async function getJobsCount(context, baseUrl) {
+  logDebug('Getting jobs count for:', baseUrl);
+  
   // 1) Jobs page: target the banner phrase "has X job openings/posted jobs"
   const jobsUrl = new URL('jobs/', baseUrl).toString();
   let page = await context.newPage();
   try {
     await safeGoto(page, jobsUrl);
-    try { await page.waitForSelector('text=/job openings/i', { timeout: 12000 }); } catch (_) { }
-    try { await page.waitForSelector('text=/posted jobs/i', { timeout: 12000 }); } catch (_) { }
-    try { await page.waitForTimeout(1000); } catch (_) { }
+    
+    // Wait for content to load with multiple strategies
+    try { 
+      await page.waitForSelector('main, #main-content, .jobs-search', { timeout: 15000 }); 
+    } catch (_) { 
+      logDebug('Main content selector not found, continuing...');
+    }
+    
+    // Look for job count indicators
+    try { 
+      await page.waitForSelector('text=/job/i', { timeout: 8000 }); 
+    } catch (_) { 
+      logDebug('No job text found, continuing...');
+    }
+    
+    await page.waitForTimeout(2000); // Allow dynamic content to load
 
+    // Enhanced pattern matching
     const phraseCount = await extractCountByPatterns(page, [
-      /has\s+(\d[\d,.]*[km]?\+?)\s+(?:job\s+openings?|posted\s+jobs?)/i,
-      /(\d[\d,.]*[km]?\+?)\s+(?:job\s+openings?|posted\s+jobs?)/i
+      /has\s+(\d[\d,.]*[km]?\+?)\s+(?:job\s+openings?|posted\s+jobs?|open\s+positions?)/i,
+      /(\d[\d,.]*[km]?\+?)\s+(?:job\s+openings?|posted\s+jobs?|open\s+positions?|jobs?\s+available)/i,
+      /(\d[\d,.]*[km]?\+?)\s+results?\s+for/i,
+      /showing\s+(\d[\d,.]*[km]?\+?)\s+jobs?/i
     ]);
-    if (phraseCount) return phraseCount;
+    if (phraseCount) {
+      logDebug('Found jobs count from patterns:', phraseCount);
+      return phraseCount;
+    }
 
+    // Enhanced DOM search with more selectors
     const fromProminent = await page.evaluate(() => {
-      const candidates = Array.from(document.querySelectorAll('h1, h2, h3, header, [aria-live], [data-test*="count" i], [class*="count" i]'));
+      const selectors = [
+        'h1', 'h2', 'h3', 'header', 
+        '[aria-live]', '[data-test*="count" i]', '[class*="count" i]',
+        '[class*="result" i]', '[class*="job" i]', 
+        '.jobs-search-results-list__text',
+        '.jobs-search-no-results__image + div',
+        '[data-test-id*="job"]'
+      ];
+      
+      const candidates = [];
+      selectors.forEach(sel => {
+        try {
+          candidates.push(...Array.from(document.querySelectorAll(sel)));
+        } catch (_) {}
+      });
+      
       const texts = candidates.map(el => el.textContent?.replace(/\s+/g, ' ').trim() || '').filter(Boolean);
+      
       for (const t of texts) {
-        const m = t.match(/(\d[\d,.]*\s*[km]?\+?)\s+(?:jobs|job openings)/i) || t.match(/\b(?:jobs|job openings)\b\s*[()\-:]?\s*(\d[\d,.]*\s*[km]?\+?)/i);
-        if (m && (m[1] || m[2])) return (m[1] || m[2]);
+        const patterns = [
+          /(\d[\d,.]*\s*[km]?\+?)\s+(?:jobs?|job openings?|positions?|results?)/i,
+          /\b(?:jobs?|job openings?|positions?|results?)\b\s*[()\-:]?\s*(\d[\d,.]*\s*[km]?\+?)/i,
+          /(\d[\d,.]*\s*[km]?\+?)\s+open/i
+        ];
+        
+        for (const pattern of patterns) {
+          const m = t.match(pattern);
+          if (m && (m[1] || m[2])) {
+            return (m[1] || m[2]);
+          }
+        }
       }
       return null;
     });
+    
     const fromProminentParsed = parseHumanNumber(fromProminent);
-    if (fromProminentParsed) return fromProminentParsed;
+    if (fromProminentParsed) {
+      logDebug('Found jobs count from DOM:', fromProminentParsed);
+      return fromProminentParsed;
+    }
+    
+    logDebug('No jobs count found on jobs page');
   } finally {
     try { await page.close(); } catch (_) { }
   }
@@ -180,45 +263,85 @@ async function getJobsCount(context, baseUrl) {
 }
 
 async function getEmployeeCount(context, baseUrl) {
+  logDebug('Getting employee count for:', baseUrl);
+  
   // Primary: /people page shows total employees on LinkedIn
   const peopleUrl = new URL('people/', baseUrl).toString();
   let page = await context.newPage();
   try {
     await safeGoto(page, peopleUrl);
+    
+    // Wait for content to load
+    try { 
+      await page.waitForSelector('main, #main-content', { timeout: 15000 }); 
+    } catch (_) { 
+      logDebug('Main content not found on people page');
+    }
+    
+    await page.waitForTimeout(2000);
 
-    // New UI pattern: "754,196 associated members"
+    // Enhanced patterns for associated members
     const associatedMembers = await extractCountByPatterns(page, [
-      /(\d[\d,.]*[km]?\+?)\s+associated\s+members\b/i
+      /(\d[\d,.]*[km]?\+?)\s+associated\s+members\b/i,
+      /(\d[\d,.]*[km]?\+?)\s+members?\s+on\s+linkedin/i,
+      /(\d[\d,.]*[km]?\+?)\s+people\s+work\s+here/i
     ]);
-    if (associatedMembers) return { employeeCount: associatedMembers, employeeCountRange: null };
+    if (associatedMembers) {
+      logDebug('Found associated members:', associatedMembers);
+      return { employeeCount: associatedMembers, employeeCountRange: null };
+    }
 
-    // Prefer the explicit "See all X employees on LinkedIn" link
+    // Enhanced link text search
     const linkText = await page.evaluate(() => {
-      const nodes = Array.from(document.querySelectorAll('a, button'));
+      const selectors = ['a', 'button', 'span', 'div'];
+      const nodes = [];
+      selectors.forEach(sel => {
+        try {
+          nodes.push(...Array.from(document.querySelectorAll(sel)));
+        } catch (_) {}
+      });
+      
       for (const n of nodes) {
         const t = n.textContent?.replace(/\s+/g, ' ').trim() || '';
-        if (/see all\s+\d[\d,.]*[km]?\+?\s+employees\s+on\s+linkedin/i.test(t)) return t;
-        if (/see all\s+\d[\d,.]*[km]?\+?\s+employees/i.test(t) && /linkedin/i.test(t)) return t;
+        const patterns = [
+          /see all\s+(\d[\d,.]*[km]?\+?)\s+employees\s+on\s+linkedin/i,
+          /see all\s+(\d[\d,.]*[km]?\+?)\s+employees/i,
+          /(\d[\d,.]*[km]?\+?)\s+employees\s+on\s+linkedin/i,
+          /view all\s+(\d[\d,.]*[km]?\+?)\s+employees/i
+        ];
+        
+        for (const pattern of patterns) {
+          const m = t.match(pattern);
+          if (m && m[1]) return { text: t, match: m[1] };
+        }
       }
       return null;
     });
+    
     if (linkText) {
-      const m = linkText.match(/see all\s+(\d[\d,.]*[km]?\+?)\s+employees/i);
-      const raw = m?.[1] || null;
-      const numeric = parseHumanNumber(raw);
+      const numeric = parseHumanNumber(linkText.match);
       if (numeric) {
-        const range = raw && /\+$/.test(raw) ? `${raw}` : null;
+        const range = linkText.match && /\+$/.test(linkText.match) ? linkText.match : null;
+        logDebug('Found employee count from link:', numeric, range);
         return { employeeCount: numeric, employeeCountRange: range };
       }
     }
 
-    // Fallback: text search anywhere on the page
+    // Enhanced fallback patterns
     const patterns = [
       /see all\s+(\d[\d,.]*[km]?\+?)\s+employees/i,
-      /(\d[\d,.]*[km]?\+?)\s+employees\b/i
+      /(\d[\d,.]*[km]?\+?)\s+employees\s+on\s+linkedin/i,
+      /(\d[\d,.]*[km]?\+?)\s+employees\b/i,
+      /(\d[\d,.]*[km]?\+?)\s+people\s+work/i,
+      /(\d[\d,.]*[km]?\+?)\s+team\s+members/i
     ];
     const employees = await extractCountByPatterns(page, patterns);
-    if (employees) return { employeeCount: employees, employeeCountRange: null };
+    if (employees) {
+      logDebug('Found employee count from patterns:', employees);
+      return { employeeCount: employees, employeeCountRange: null };
+    }
+    
+    logDebug('No employee count found on people page');
   } finally {
     try { await page.close(); } catch (_) { }
   }
@@ -517,26 +640,63 @@ let persistentContextPromise = null;
 async function getPersistentContext(headless) {
   if (persistentContextPromise) return persistentContextPromise;
   const userDataDir = process.env.PLAYWRIGHT_USER_DATA_DIR || path.resolve(__dirname, '..', 'user-data');
-  const consistentUserAgent = process.env.PLAYWRIGHT_UA || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36';
+  const consistentUserAgent = process.env.PLAYWRIGHT_UA || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
   const contextOptions = {
     headless: headless ?? parseBoolean(process.env.HEADLESS, true),
     viewport: { width: 1366, height: 768 },
     colorScheme: 'light',
-    timezoneId: process.env.PLAYWRIGHT_TZ || 'UTC',
+    timezoneId: process.env.PLAYWRIGHT_TZ || 'America/New_York',
     locale: process.env.PLAYWRIGHT_LOCALE || 'en-US',
     userAgent: consistentUserAgent,
-    // Add stealth options to avoid detection
+    // Enhanced stealth options
     extraHTTPHeaders: {
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-      'Accept-Language': 'en-US,en;q=0.5',
-      'Accept-Encoding': 'gzip, deflate',
-      'DNT': '1',
-      'Connection': 'keep-alive',
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Accept-Encoding': 'gzip, deflate, br',
+      'Cache-Control': 'max-age=0',
+      'Sec-Ch-Ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+      'Sec-Ch-Ua-Mobile': '?0',
+      'Sec-Ch-Ua-Platform': '"Windows"',
+      'Sec-Fetch-Dest': 'document',
+      'Sec-Fetch-Mode': 'navigate',
+      'Sec-Fetch-Site': 'none',
+      'Sec-Fetch-User': '?1',
       'Upgrade-Insecure-Requests': '1',
     },
+    // Disable automation indicators
+    args: [
+      '--no-first-run',
+      '--no-default-browser-check',
+      '--disable-blink-features=AutomationControlled',
+      '--disable-features=VizDisplayCompositor',
+    ],
   };
   persistentContextPromise = chromium.launchPersistentContext(userDataDir, contextOptions)
     .then(async (ctx) => {
+      // Add stealth scripts to avoid detection
+      await ctx.addInitScript(() => {
+        // Remove webdriver property
+        delete navigator.__proto__.webdriver;
+        
+        // Mock plugins
+        Object.defineProperty(navigator, 'plugins', {
+          get: () => [1, 2, 3, 4, 5]
+        });
+        
+        // Mock languages
+        Object.defineProperty(navigator, 'languages', {
+          get: () => ['en-US', 'en']
+        });
+        
+        // Mock permissions
+        const originalQuery = window.navigator.permissions.query;
+        window.navigator.permissions.query = (parameters) => (
+          parameters.name === 'notifications' ?
+            Promise.resolve({ state: Notification.permission }) :
+            originalQuery(parameters)
+        );
+      });
+      
       // Inject LI_AT cookie if provided and not present
       const liAt = process.env.LI_AT || process.env.LINKEDIN_LI_AT;
       if (liAt) {

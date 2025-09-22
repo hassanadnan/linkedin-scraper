@@ -50,7 +50,16 @@ function findFirstOrgIdInHtml(html) {
 
 function extractVanity(inputUrl) {
   try {
-    if (!/^https?:\/\//i.test(inputUrl)) return inputUrl.trim().replace(/\/$/, '');
+    // Handle simple company slugs (e.g., "microsoft")
+    if (!/^https?:\/\//i.test(inputUrl) && !inputUrl.includes('/') && !inputUrl.includes('.')) {
+      return inputUrl.trim().replace(/\/$/, '');
+    }
+    
+    // Handle full URLs
+    if (!/^https?:\/\//i.test(inputUrl)) {
+      inputUrl = `https://www.linkedin.com/company/${inputUrl}/`;
+    }
+    
     const u = new URL(inputUrl);
     const parts = u.pathname.split('/').filter(Boolean);
     const idx = parts.findIndex(p => p.toLowerCase() === 'company');
@@ -77,17 +86,13 @@ async function resolveOrgId(companyUrl, liAt) {
   const timeout = Number(process.env.VOYAGER_TIMEOUT_MS || 12000);
   const errors = [];
   
-  // 1) Try public HTML
-  try {
-    const html = await fetchText(companyUrl, headers, timeout);
-    const orgId = findFirstOrgIdInHtml(html);
-    if (orgId) return orgId;
-    errors.push('HTML method: No org ID found in page content');
-  } catch (err) {
-    errors.push(`HTML method: ${err.message}`);
+  // Ensure we have a proper company URL
+  let normalizedUrl = companyUrl;
+  if (!/^https?:\/\//i.test(companyUrl)) {
+    normalizedUrl = `https://www.linkedin.com/company/${companyUrl}/`;
   }
-
-  // 2) Try Voyager vanityName lookup using slug
+  
+  // 1) Try Voyager vanityName lookup using slug first (most reliable)
   const vanity = extractVanity(companyUrl);
   if (vanity) {
     try {
@@ -107,10 +112,20 @@ async function resolveOrgId(companyUrl, liAt) {
   } else {
     errors.push('Voyager API method: Could not extract vanity name from URL');
   }
+  
+  // 2) Try public HTML
+  try {
+    const html = await fetchText(normalizedUrl, headers, timeout);
+    const orgId = findFirstOrgIdInHtml(html);
+    if (orgId) return orgId;
+    errors.push('HTML method: No org ID found in page content');
+  } catch (err) {
+    errors.push(`HTML method: ${err.message}`);
+  }
 
   // 3) Try /about page HTML
   try {
-    const aboutUrl = companyUrl.endsWith('/') ? `${companyUrl}about/` : `${companyUrl}/about/`;
+    const aboutUrl = normalizedUrl.endsWith('/') ? `${normalizedUrl}about/` : `${normalizedUrl}/about/`;
     const html = await fetchText(aboutUrl, headers, timeout);
     const orgId = findFirstOrgIdInHtml(html);
     if (orgId) return orgId;
