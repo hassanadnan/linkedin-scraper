@@ -55,6 +55,9 @@ function withTimeout(signal, ms) {
 }
 
 async function fetchText(url, headers, timeoutMs) {
+  // Add delay to avoid rate limiting
+  await new Promise(resolve => setTimeout(resolve, 1000 + Math.random() * 2000)); // 1-3 second delay
+  
   const base = new AbortController();
   const { signal, cancel } = withTimeout(base.signal, timeoutMs);
   const res = await fetch(url, { headers, signal }).finally(cancel);
@@ -63,6 +66,9 @@ async function fetchText(url, headers, timeoutMs) {
 }
 
 async function fetchJson(url, headers, timeoutMs) {
+  // Add delay to avoid rate limiting
+  await new Promise(resolve => setTimeout(resolve, 1000 + Math.random() * 2000)); // 1-3 second delay
+  
   const base = new AbortController();
   const { signal, cancel } = withTimeout(base.signal, timeoutMs);
   const res = await fetch(url, { headers, signal }).finally(cancel);
@@ -441,37 +447,70 @@ async function voyagerAssociatedMembers(companyUrl, liAt, orgId) {
 async function voyagerScrape(companyUrl) {
   const liAt = process.env.LI_AT || process.env.LINKEDIN_LI_AT;
   if (!liAt) throw new Error('LI_AT cookie required for Voyager mode');
-  const orgId = await resolveOrgId(companyUrl, liAt);
   
-  // Try associated members first (most precise), then fallback methods
-  let associatedMembers = await voyagerAssociatedMembers(companyUrl, liAt, orgId);
-  
-  // If Voyager methods fail, try browser-based extraction as last resort
-  if (!associatedMembers) {
+  try {
+    const orgId = await resolveOrgId(companyUrl, liAt);
+    
+    // Sequential execution to avoid rate limiting
+    console.log('Starting Voyager scrape with rate limiting protection...');
+    
+    // Try associated members first (most precise)
+    let associatedMembers = null;
     try {
-      console.log('Voyager associated members failed, trying browser fallback...');
-      associatedMembers = await browserAssociatedMembersFallback(companyUrl);
+      associatedMembers = await voyagerAssociatedMembers(companyUrl, liAt, orgId);
     } catch (err) {
-      console.log('Browser fallback for associated members failed:', err.message);
+      console.log('Associated members extraction failed:', err.message);
     }
+    
+    // Add delay before next request
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    
+    // Try employee count fallback
+    let employeeCountFallback = null;
+    try {
+      employeeCountFallback = await voyagerEmployeesTotal(orgId, liAt);
+    } catch (err) {
+      console.log('Employee count fallback failed:', err.message);
+    }
+    
+    // Add delay before next request
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    
+    // Try jobs count
+    let jobsPostedCount = null;
+    try {
+      jobsPostedCount = await voyagerJobsTotal(orgId, liAt);
+    } catch (err) {
+      console.log('Jobs count extraction failed:', err.message);
+    }
+    
+    // Prioritize associated members count, but provide both for comparison
+    const employeeCount = associatedMembers ?? employeeCountFallback ?? null;
+    
+    return { 
+      orgId, 
+      employeeCount, 
+      associatedMembers, // Exact count from people tab
+      employeeCountRange: associatedMembers ? null : (employeeCountFallback ? `${employeeCountFallback}+` : null),
+      jobsPostedCount,
+      dataSource: associatedMembers ? 'associated_members' : (employeeCountFallback ? 'employee_search' : 'none'),
+      rateLimited: false
+    };
+  } catch (err) {
+    if (err.message.includes('429') || err.message.includes('rate limit')) {
+      return {
+        orgId: null,
+        employeeCount: null,
+        associatedMembers: null,
+        employeeCountRange: null,
+        jobsPostedCount: null,
+        dataSource: 'rate_limited',
+        rateLimited: true,
+        error: 'LinkedIn rate limiting detected. Please try again later.'
+      };
+    }
+    throw err;
   }
-  
-  const [employeeCountFallback, jobsPostedCount] = await Promise.all([
-    voyagerEmployeesTotal(orgId, liAt),
-    voyagerJobsTotal(orgId, liAt)
-  ]);
-  
-  // Prioritize associated members count, but provide both for comparison
-  const employeeCount = associatedMembers ?? employeeCountFallback ?? null;
-  
-  return { 
-    orgId, 
-    employeeCount, 
-    associatedMembers, // Exact count from people tab
-    employeeCountRange: associatedMembers ? null : (employeeCountFallback ? `${employeeCountFallback}+` : null),
-    jobsPostedCount,
-    dataSource: associatedMembers ? 'associated_members' : (employeeCountFallback ? 'employee_search' : 'none')
-  };
 }
 
 // Browser-based fallback for associated members (last resort)
