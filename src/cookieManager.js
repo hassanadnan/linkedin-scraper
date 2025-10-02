@@ -80,6 +80,104 @@ class CookieManager {
         this.lastRefresh = Date.now();
     }
 
+    // Validate session health without triggering resets
+    async validateSessionHealth() {
+        const liAt = process.env.LI_AT || process.env.LINKEDIN_LI_AT;
+        if (!liAt) return { valid: false, reason: 'No LI_AT cookie' };
+
+        try {
+            // Use a lightweight endpoint that doesn't trigger security
+            const response = await fetch('https://www.linkedin.com/voyager/api/me', {
+                method: 'HEAD', // HEAD request is less suspicious
+                headers: {
+                    'Cookie': this.buildCookieString(),
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Accept': 'application/vnd.linkedin.normalized+json+2.1',
+                    'Accept-Language': 'en-US,en;q=0.9',
+                    'Cache-Control': 'no-cache',
+                    'Pragma': 'no-cache'
+                },
+                timeout: 5000
+            });
+
+            const valid = response.status === 200;
+            return {
+                valid,
+                status: response.status,
+                reason: valid ? 'Session healthy' : `HTTP ${response.status}`,
+                lastChecked: new Date().toISOString()
+            };
+        } catch (err) {
+            return {
+                valid: false,
+                reason: err.message,
+                lastChecked: new Date().toISOString()
+            };
+        }
+    }
+
+    // Get session stability score
+    getSessionStability() {
+        const liAt = process.env.LI_AT || process.env.LINKEDIN_LI_AT;
+        if (!liAt) return { score: 0, issues: ['No LI_AT cookie'] };
+
+        const issues = [];
+        let score = 100;
+
+        // Check cookie age (estimate)
+        const cookieLength = liAt.length;
+        if (cookieLength < 100) {
+            issues.push('Cookie seems too short');
+            score -= 20;
+        }
+
+        // Check available supporting cookies
+        const supportingCookies = Object.keys(process.env).filter(key => 
+            key.startsWith('LI_') && key !== 'LI_AT' && process.env[key]
+        );
+        
+        if (supportingCookies.length < 3) {
+            issues.push('Missing supporting cookies (bcookie, bscookie, etc.)');
+            score -= 30;
+        }
+
+        // Check refresh frequency
+        if (this.lastRefresh && (Date.now() - this.lastRefresh) < 60000) {
+            issues.push('Too frequent refresh attempts');
+            score -= 25;
+        }
+
+        return {
+            score: Math.max(0, score),
+            issues,
+            supportingCookies: supportingCookies.length,
+            recommendations: this.getStabilityRecommendations(score, issues)
+        };
+    }
+
+    // Get recommendations for better stability
+    getStabilityRecommendations(score, issues) {
+        const recommendations = [];
+
+        if (score < 50) {
+            recommendations.push('Export complete LinkedIn session (all cookies + localStorage)');
+            recommendations.push('Use a dedicated browser profile for LinkedIn');
+            recommendations.push('Avoid clearing browser data');
+        }
+
+        if (issues.some(i => i.includes('supporting cookies'))) {
+            recommendations.push('Add JSESSIONID, bcookie, bscookie, liap cookies');
+            recommendations.push('Use the /session-export-guide endpoint for instructions');
+        }
+
+        if (issues.some(i => i.includes('frequent'))) {
+            recommendations.push('Reduce request frequency');
+            recommendations.push('Add longer delays between requests');
+        }
+
+        return recommendations;
+    }
+
     // Save complete session state (cookies + storage)
     async saveFullSession(context) {
         try {

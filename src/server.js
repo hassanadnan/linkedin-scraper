@@ -187,6 +187,35 @@ app.get('/debug-employee-count', async (req, res) => {
   }
 });
 
+// Session stability analysis
+app.get('/session-stability', async (req, res) => {
+  const cookieManager = require('./cookieManager');
+  
+  try {
+    const [stability, health] = await Promise.all([
+      cookieManager.getSessionStability(),
+      cookieManager.validateSessionHealth()
+    ]);
+    
+    res.json({
+      stability,
+      health,
+      timestamp: new Date().toISOString(),
+      recommendations: {
+        immediate: stability.score < 30 ? ['Get fresh LinkedIn session immediately'] : [],
+        longTerm: [
+          'Use dedicated browser profile for LinkedIn',
+          'Export complete session state regularly',
+          'Monitor session health before heavy usage',
+          'Implement request queuing with delays'
+        ]
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Cookie health monitoring with multi-cookie support
 app.get('/cookie-health', async (req, res) => {
   const cookieManager = require('./cookieManager');
