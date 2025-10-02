@@ -21,14 +21,29 @@ app.get('/', (req, res) => {
   res.json({
     message: 'LinkedIn Company Scraper API',
     status: 'ready',
-    usage: {
-      scrape: `${baseUrl}/scrape?url=COMPANY_URL_OR_SLUG`,
-      example: `${baseUrl}/scrape?url=microsoft`,
-      health: `${baseUrl}/health`,
-      debug: `${baseUrl}/debug`,
-      testAuth: `${baseUrl}/test-auth`
+    methods: {
+      graphql: `${baseUrl}/scrape-graphql?url=COMPANY_URL`,
+      enhanced: `${baseUrl}/scrape-enhanced?url=COMPANY_URL`,
+      voyager: `${baseUrl}/scrape?url=COMPANY_URL`,
+      browser: `${baseUrl}/scrape?url=COMPANY_URL&voyager=false`
     },
-    documentation: 'See README.md and USAGE.md for full documentation'
+    examples: {
+      graphql: `${baseUrl}/scrape-graphql?url=microsoft`,
+      enhanced: `${baseUrl}/scrape-enhanced?url=microsoft`,
+      traditional: `${baseUrl}/scrape?url=microsoft`
+    },
+    monitoring: {
+      health: `${baseUrl}/health`,
+      cookieHealth: `${baseUrl}/cookie-health`,
+      sessionStability: `${baseUrl}/session-stability`,
+      debug: `${baseUrl}/debug`
+    },
+    guides: {
+      sessionExport: `${baseUrl}/session-export-guide`,
+      multiCookie: 'See MULTI-COOKIE-SETUP.md',
+      graphql: 'See GRAPHQL-IMPLEMENTATION-GUIDE.md'
+    },
+    documentation: 'See README.md and implementation guides for full documentation'
   });
 });
 
@@ -214,6 +229,82 @@ app.get('/session-stability', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// GraphQL-specific endpoint
+app.get('/scrape-graphql', async (req, res) => {
+  const { url } = req.query;
+  if (!url) return res.status(400).json({ error: 'Missing url parameter' });
+
+  try {
+    const GraphQLScraper = require('./graphqlScraper');
+    const graphqlScraper = new GraphQLScraper();
+    
+    const result = await graphqlScraper.scrapeCompanyData(url);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ 
+      error: error.message,
+      method: 'graphql',
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// Enhanced hybrid endpoint with GraphQL priority
+app.get('/scrape-enhanced', async (req, res) => {
+  const { url } = req.query;
+  if (!url) return res.status(400).json({ error: 'Missing url parameter' });
+
+  const results = {
+    companyUrl: url,
+    attempts: [],
+    finalData: null,
+    fetchedAt: new Date().toISOString()
+  };
+
+  // Method 1: Try GraphQL first
+  try {
+    const GraphQLScraper = require('./graphqlScraper');
+    const graphqlScraper = new GraphQLScraper();
+    const graphqlData = await graphqlScraper.scrapeCompanyData(url);
+    
+    results.attempts.push({ method: 'graphql', success: true });
+    results.finalData = graphqlData;
+    return res.json(results);
+  } catch (error) {
+    results.attempts.push({ method: 'graphql', success: false, error: error.message });
+  }
+
+  // Method 2: Fallback to Voyager API
+  try {
+    const { voyagerScrape } = require('./voyager');
+    const voyagerData = await voyagerScrape(url);
+    
+    results.attempts.push({ method: 'voyager', success: true });
+    results.finalData = voyagerData;
+    return res.json(results);
+  } catch (error) {
+    results.attempts.push({ method: 'voyager', success: false, error: error.message });
+  }
+
+  // Method 3: Fallback to browser scraping
+  try {
+    const { scrapeCompany } = require('./scrape');
+    const browserData = await scrapeCompany(url, { headless: true });
+    
+    results.attempts.push({ method: 'browser', success: true });
+    results.finalData = browserData;
+    return res.json(results);
+  } catch (error) {
+    results.attempts.push({ method: 'browser', success: false, error: error.message });
+  }
+
+  // All methods failed
+  res.status(500).json({
+    ...results,
+    error: 'All scraping methods failed'
+  });
 });
 
 // Cookie health monitoring with multi-cookie support
