@@ -132,10 +132,10 @@ class CookieManager {
         }
 
         // Check available supporting cookies
-        const supportingCookies = Object.keys(process.env).filter(key => 
+        const supportingCookies = Object.keys(process.env).filter(key =>
             key.startsWith('LI_') && key !== 'LI_AT' && process.env[key]
         );
-        
+
         if (supportingCookies.length < 3) {
             issues.push('Missing supporting cookies (bcookie, bscookie, etc.)');
             score -= 30;
